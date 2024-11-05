@@ -1,0 +1,6 @@
+bottle==0.13.02
+gunicorn==23.0.0
+requests==2.31.0
+argparse==1.4.0
+herbie-data==2024.8.0
+ecmwf-api-client==1.6.3

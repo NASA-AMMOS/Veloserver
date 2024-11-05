@@ -29,6 +29,8 @@ def lon360(lon):
     """
     Convert a longitude from -180 to 180 range to 0 to 360 range.
     """
+    if not isinstance(lon, (int, float)):
+        lon = float(lon)
     return (lon + 360) % 360 if lon < 0 else lon
 
 
@@ -49,7 +51,7 @@ def process_hrrr(projwin, date, time, output_dir, format):
     print('Downloaded', download_file)
 
     regrid_file = output_dir + '/hrrr-uv-' + date + '.grib2'
-    wgrib2_commands = ['./wgrib2',
+    wgrib2_commands = ['wgrib2',
                        download_file,
                        '-new_grid_winds', 'earth',
                        '-new_grid', 'latlon',
@@ -63,7 +65,7 @@ def process_hrrr(projwin, date, time, output_dir, format):
     if projwin != [-180, 90, 180, -90]:
         projwin_string = '_'.join(map(str, projwin))
         subset_file = output_dir + '/hrrr-uv-' + projwin_string + '-' + date + '.grib2'
-        wgrib2_commands = ['./wgrib2',
+        wgrib2_commands = ['wgrib2',
                            regrid_file,
                            '-small_grib',
                            str(projwin[0]) + ':' + str(projwin[2]),
@@ -75,7 +77,7 @@ def process_hrrr(projwin, date, time, output_dir, format):
         print('Subset file', subset_file)
 
     output_file = output_grib.replace('.grib2', '.json')
-    grib2json_commands = ['./grib2json',
+    grib2json_commands = ['grib2json',
                           '--names',
                           '--data',
                           '--fv', '10.0',
@@ -84,6 +86,8 @@ def process_hrrr(projwin, date, time, output_dir, format):
         print(' '.join(grib2json_commands))
         subprocess.run(grib2json_commands, stdout=f, text=True)
         print('Created', output_file)
+
+    return output_file
 
 
 def process_ecmwf(projwin, date, time, output_dir, format):
@@ -114,7 +118,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
     if projwin is not None:
         projwin_string = '_'.join(map(str, projwin))
         subset_file = output_dir + '/ecmwf-uv-' + projwin_string + '-' + date + '.grib'
-        wgrib2_commands = ['./wgrib2',
+        wgrib2_commands = ['wgrib2',
                            download_file,
                            '-small_grib',
                            str(lon360(projwin[0])) + ':' + str(lon360(projwin[2])),
@@ -126,7 +130,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
         print('Subset file', subset_file)
 
     output_file = download_file.replace('.grib', '.json')
-    grib2json_commands = ['./grib2json',
+    grib2json_commands = ['grib2json',
                           '--names',
                           '--data',
                           '--fv', '10.0',
@@ -135,6 +139,8 @@ def process_ecmwf(projwin, date, time, output_dir, format):
         print(' '.join(grib2json_commands))
         subprocess.run(grib2json_commands, stdout=f, text=True)
         print('Created', output_file)
+
+    return output_file
 
 
 def main():
