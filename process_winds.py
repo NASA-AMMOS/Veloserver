@@ -3,6 +3,7 @@
 import os
 import argparse
 import subprocess
+from datetime import datetime
 from herbie import Herbie
 from ecmwfapi import ECMWFDataServer
 
@@ -39,9 +40,12 @@ def process_hrrr(projwin, date, time, output_dir, format):
     if projwin is None:
         projwin = [-180, 90, 180, -90]
 
+    # Use just the hour
+    hour = datetime.strptime(time, '%H:%M:%S').strftime('%H:00:00')
+
     # Get HRRR data
     H = Herbie(
-        date + ' ' + time,  # model run date/time
+        date + ' ' + hour,  # model run date/time
         model="hrrr",  # model name
         fxx=0,  # forecast lead time
         save_dir=output_dir
@@ -50,42 +54,45 @@ def process_hrrr(projwin, date, time, output_dir, format):
     download_file = str(H.download(r":[U|V]GRD:10 m", verbose=True))
     print('Downloaded', download_file)
 
-    regrid_file = output_dir + '/hrrr-uv-' + date + '.grib2'
-    wgrib2_commands = ['wgrib2',
-                       download_file,
-                       '-new_grid_winds', 'earth',
-                       '-new_grid', 'latlon',
-                       '-134:730:0.1', '21:310:0.1',
-                       regrid_file]
-    print(' '.join(wgrib2_commands))
-    subprocess.run(wgrib2_commands)
+    regrid_file = output_dir + '/hrrr-uv-' + date + 'T' + hour + '.grib2'
+    if not os.path.exists(regrid_file):
+        wgrib2_commands = ['wgrib2',
+                           download_file,
+                           '-new_grid_winds', 'earth',
+                           '-new_grid', 'latlon',
+                           '-134:730:0.1', '21:310:0.1',
+                           regrid_file]
+        print(' '.join(wgrib2_commands))
+        subprocess.run(wgrib2_commands)
     output_grib = regrid_file
     print('Reproject file', regrid_file)
 
     if projwin != [-180, 90, 180, -90]:
         projwin_string = '_'.join(map(str, projwin))
-        subset_file = output_dir + '/hrrr-uv-' + projwin_string + '-' + date + '.grib2'
-        wgrib2_commands = ['wgrib2',
-                           regrid_file,
-                           '-small_grib',
-                           str(projwin[0]) + ':' + str(projwin[2]),
-                           str(projwin[3]) + ':' + str(projwin[1]),
-                           subset_file]
-        print(' '.join(wgrib2_commands))
-        subprocess.run(wgrib2_commands)
+        subset_file = output_dir + '/hrrr-uv-' + projwin_string + '-' + date + 'T' + hour + '.grib2'
+        if not os.path.exists(subset_file):
+            wgrib2_commands = ['wgrib2',
+                               regrid_file,
+                               '-small_grib',
+                               str(projwin[0]) + ':' + str(projwin[2]),
+                               str(projwin[3]) + ':' + str(projwin[1]),
+                               subset_file]
+            print(' '.join(wgrib2_commands))
+            subprocess.run(wgrib2_commands)
         output_grib = subset_file
         print('Subset file', subset_file)
 
     output_file = output_grib.replace('.grib2', '.json')
-    grib2json_commands = ['grib2json',
-                          '--names',
-                          '--data',
-                          '--fv', '10.0',
-                          output_grib]
-    with open(output_file, 'w') as f:
-        print(' '.join(grib2json_commands))
-        subprocess.run(grib2json_commands, stdout=f, text=True)
-        print('Created', output_file)
+    if not os.path.exists(output_file):
+        grib2json_commands = ['grib2json',
+                              '--names',
+                              '--data',
+                              '--fv', '10.0',
+                              output_grib]
+        with open(output_file, 'w') as f:
+            print(' '.join(grib2json_commands))
+            subprocess.run(grib2json_commands, stdout=f, text=True)
+            print('Created', output_file)
 
     return output_file
 
@@ -93,8 +100,11 @@ def process_hrrr(projwin, date, time, output_dir, format):
 def process_ecmwf(projwin, date, time, output_dir, format):
     print('Downloading ECMWF data')
 
-    download_file = output_dir + '/ecmwf-uv-' + date + '.grib'
-    output_file = output_dir + '/ecmwf-uv-' + date + '.json'
+    # Round down to the nearest 6th hour
+    hour = '00:00:00'
+
+    download_file = output_dir + '/ecmwf-uv-' + date + 'T' + hour + '.grib'
+    output_file = output_dir + '/ecmwf-uv-' + date + 'T' + hour + '.json'
     if not os.path.isfile(download_file):
         server = ECMWFDataServer()
         server.retrieve({
@@ -108,7 +118,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
             "param": "165/166",
             "step": "0",
             "stream": "enfo",
-            "time": "00:00:00",
+            "time": hour,
             "type": "cf",
             "grid": "0.1/0.1",
             "target": download_file
@@ -117,28 +127,30 @@ def process_ecmwf(projwin, date, time, output_dir, format):
 
     if projwin is not None:
         projwin_string = '_'.join(map(str, projwin))
-        subset_file = output_dir + '/ecmwf-uv-' + projwin_string + '-' + date + '.grib'
-        wgrib2_commands = ['wgrib2',
-                           download_file,
-                           '-small_grib',
-                           str(lon360(projwin[0])) + ':' + str(lon360(projwin[2])),
-                           str(projwin[3]) + ':' + str(projwin[1]),
-                           subset_file]
-        print(' '.join(wgrib2_commands))
-        subprocess.run(wgrib2_commands)
+        subset_file = output_dir + '/ecmwf-uv-' + projwin_string + '-' + date + 'T' + hour + '.grib'
+        if not os.path.exists(subset_file):
+            wgrib2_commands = ['wgrib2',
+                               download_file,
+                               '-small_grib',
+                               str(lon360(projwin[0])) + ':' + str(lon360(projwin[2])),
+                               str(projwin[3]) + ':' + str(projwin[1]),
+                               subset_file]
+            print(' '.join(wgrib2_commands))
+            subprocess.run(wgrib2_commands)
         download_file = subset_file
         print('Subset file', subset_file)
 
     output_file = download_file.replace('.grib', '.json')
-    grib2json_commands = ['grib2json',
-                          '--names',
-                          '--data',
-                          '--fv', '10.0',
-                          download_file]
-    with open(output_file, 'w') as f:
-        print(' '.join(grib2json_commands))
-        subprocess.run(grib2json_commands, stdout=f, text=True)
-        print('Created', output_file)
+    if not os.path.exists(output_file):
+        grib2json_commands = ['grib2json',
+                              '--names',
+                              '--data',
+                              '--fv', '10.0',
+                              download_file]
+        with open(output_file, 'w') as f:
+            print(' '.join(grib2json_commands))
+            subprocess.run(grib2json_commands, stdout=f, text=True)
+            print('Created', output_file)
 
     return output_file
 
