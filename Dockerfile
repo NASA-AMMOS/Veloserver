@@ -42,9 +42,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get -y autoremove build-essential
 
 # Copy main files and create cache
-COPY . /home/wind_server/
-WORKDIR /home/wind_server
-RUN mkdir -p /home/wind_server/cache
+COPY . /home/anemoserver/
+WORKDIR /home/anemoserver
+RUN mkdir -p /home/anemoserver/cache
 
 # Run pip to install Python dependencies
 RUN pip3 install --upgrade pip
