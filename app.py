@@ -1,7 +1,7 @@
 import os
 import config
 import shutil
-from process_winds import process_hrrr, process_ecmwf
+from process_winds import process_hrrr, process_ecmwf, process_gfs
 from datetime import datetime
 
 
@@ -34,6 +34,14 @@ class App():
                                    datetime_object.strftime("%H:%M:%S"),
                                    config.APP_CONFIG["CACHE_DIR"],
                                    format)
+            with open(output, 'r') as f:
+                response = f.read()
+        elif model == 'gfs':
+            output = process_gfs(projwin,
+                                 datetime_object.strftime("%Y-%m-%d"),
+                                 datetime_object.strftime("%H:%M:%S"),
+                                 config.APP_CONFIG["CACHE_DIR"],
+                                 format)
             with open(output, 'r') as f:
                 response = f.read()
         else:
