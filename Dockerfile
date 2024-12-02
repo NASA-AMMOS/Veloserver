@@ -42,9 +42,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get -y autoremove build-essential
 
 # Copy main files and create cache
-COPY . /home/anemoserver/
-WORKDIR /home/anemoserver
-RUN mkdir -p /home/anemoserver/cache
+COPY . /home/veloserver/
+WORKDIR /home/veloserver
+RUN mkdir -p /home/veloserver/cache
 
 # Run pip to install Python dependencies
 RUN pip3 install --upgrade pip
