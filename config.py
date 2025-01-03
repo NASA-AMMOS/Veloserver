@@ -7,6 +7,7 @@ APP_CONFIG = {
     'CACHE_FILES': True,
     'AVAILABLE_FORMATS': {
         "json": "application/json",
+        "png": "image/png",
         "tiff": "image/tiff"
     },
     'DEFAULT_FORMAT': "application/json"

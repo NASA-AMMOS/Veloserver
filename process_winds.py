@@ -28,8 +28,9 @@ def parse_arguments():
     parser.add_argument('-m', '--model', type=str, required=False,
                         default='hrrr', help='Model name (ecmwf, gfs, hrrr)')
     parser.add_argument('-f', '--format', type=str, required=False,
-                        default='gribjson', help='Output file format (gribjson, geojson, geotiff)')
-
+                        default='gribjson', help='Output file format (gribjson, geojson, geotiff, png)')
+    parser.add_argument('-u', '--user_defined', type=str, required=False,
+                        help='Path to user defined model configuration')
     return parser.parse_args()
 
 
@@ -43,7 +44,7 @@ def lon360(lon):
 
 
 def process_hrrr(projwin, date, time, output_dir, format):
-    print('Download HRRR data')
+    print('Processing HRRR data')
     if projwin is None:
         projwin = [-180, 90, 180, -90]
 
@@ -108,7 +109,7 @@ def process_hrrr(projwin, date, time, output_dir, format):
 
 
 def process_ecmwf(projwin, date, time, output_dir, format):
-    print('Downloading ECMWF data')
+    print('Processing ECMWF data')
 
     # Round down to the nearest 6th hour
     hour = '00:00:00'
@@ -171,7 +172,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
 
 
 def process_gfs(projwin, date, time, output_dir, format):
-    print('Downloading GFS data')
+    print('Processing GFS data')
     if projwin is not None:
         projwin_string = '_'.join(map(str, projwin))
     else:
@@ -224,13 +225,27 @@ def process_gfs(projwin, date, time, output_dir, format):
     return output_file
 
 
+def process_user_defined(projwin, date, time, output_dir, format, definition):
+    print('Processing user defined model')
+
+
 def main():
     """
     Main function.
     """
     args = parse_arguments()
-    print('Getting info for', args.projwin, args.date,
-          args.time, args.model, args.output_dir)
+    print('Getting info for:', args.projwin, args.date,
+          args.time, args.output_dir)
+
+    if args.format != 'gribjson':
+        print('Only gribjson format is currently supported. ' +
+              'Support for geojson, geotiff, and png is under development')
+        return
+
+    if args.user_defined:
+        process_user_defined(args.projwin, args.date, args.time,
+                             args.output_dir, args.format, args.user_defined)
+        return
 
     if args.model == 'hrrr':
         process_hrrr(args.projwin, args.date, args.time,
