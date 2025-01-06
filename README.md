@@ -1,6 +1,6 @@
-# Veloserver - Velocity Data Visualization Services
+# Veloserver - Velocity Data Visualization Server
 
-Veloserver is a simple geospatial data server designed to return velocity data such as winds and ocean currents from weather models and other datasets. It returns the data in formats optimized for visualizing in a web client including vector streamlines via gribjson. It includes built-in caching to reduce requests to external data sources.
+Veloserver is a geospatial data visualization server designed to dynamically return velocity data such as winds and ocean currents from weather models and other datasets. It returns the data in formats optimized for visualizing in a web client including animated vector streamlines via gribjson. It includes built-in caching to reduce requests to external data sources and deliver quick results.
 
 ### Quick Start
 
@@ -35,6 +35,7 @@ Default server port is 8104. REST requests are structured in the form:
 **datetime** - In ISO8601 format: `YYYY-MM-DDThh:mm:ssZ`
 
 **projwin** - Bounding box window in format: `ulx,uly,lrx,lry`
+
 
 ### Sample Requests:
 
