@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Veloserver</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f2f2f2;
+        }
+
+        section {
+            width: 80%;
+            margin-left: auto;
+            margin-right: auto;
+            text-align: center;
+            background-color: #fff;
+            border: 1px solid #ddd;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.2);
+        }
+
+        h1 {
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+
+        p {
+            margin-bottom: 20px;
+        }
+
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <section id="title">
+            <h1>Veloserver: Velocity Data Visualization Services</h1>
+        </section>
+        <section id="description">
+            <h2>Description</h2>
+            <p>Veloserver is a geospatial data visualization server designed to dynamically return velocity data such as winds and ocean currents from weather models and other datasets. It returns the data in formats optimized for visualizing in a web client including animated vector streamlines via gribjson. It includes built-in caching to reduce requests to external data sources and deliver quick results.</p>
+        </section>
+        <section id="usage">
+            <h2>Usage</h2>
+			<p>Default server port is 8104. REST requests are structured in the form:</p>
+			<p><code>/&lt;model&gt;/&lt;format&gt;/&lt;datetime&gt;/&lt;projwin&gt;</code></p>
+			<p><strong>model</strong> - Available options: <code>gribjson</code>, <code>geojson</code>, <code>geotiff</code>, <code>png</code></p>
+			<p><strong>format</strong> - Available options: <code>ecmwf</code>, <code>gfs</code>, <code>hrrr</code></p>
+			<p><strong>datetime</strong> - In ISO8601 format: <code>YYYY-MM-DDThh:mm:ssZ</code></p>
+			<p><strong>projwin</strong> - Bounding box window in format: <code>ulx,uly,lrx,lry</code></p>
+        </section>
+        <section id="samples">
+            <h2>Sample Requests</h2>
+			<p>HRRR global wind data for 2025-01-01 at midnight: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01/" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01/</a></p>
+			<p>ECMWF localized wind data for 2025-01-01 at 06:00:00 UTC: <a href="http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33/" rel="nofollow">http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33/</a></p>
+        </section>
+    </main>
+</body>
+</html>

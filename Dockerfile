@@ -17,7 +17,7 @@ RUN git clone https://github.com/cambecc/grib2json.git && \
     cd ..
 
 # Install wgrib2
-ENV DEBUG true
+ENV DEBUG=true
 ENV FC=gfortran
 ENV CC=gcc
 RUN apt-get update && apt-get install -y \
