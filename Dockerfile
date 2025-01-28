@@ -1,4 +1,4 @@
-FROM python:3.12-bookworm
+FROM python:3.12-slim-bookworm
 
 # Make sure apt-get commands work
 RUN mv -i /etc/apt/trusted.gpg.d/debian-archive-*.asc  /root/
@@ -7,7 +7,7 @@ RUN ln -s /usr/share/keyrings/debian-archive-* /etc/apt/trusted.gpg.d/
 WORKDIR /tmp/
 
 # Install grib2json
-RUN apt-get update && apt-get install -y maven
+RUN apt-get update && apt-get install -y git maven
 RUN git clone https://github.com/cambecc/grib2json.git && \
     cd grib2json && \
     mvn package && \

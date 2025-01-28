@@ -1,3 +1,4 @@
+import os
 from bottle import Bottle, run, request, response, static_file
 from app import App
 
@@ -77,7 +78,22 @@ def get_data_projwin(model, format, datetime, projwin):
 
 
 def main():
-    run(bottle_app, host='0.0.0.0', port=8104, debug=True, reloader=True)
+    # production
+    if (os.path.exists('/certs/key.pem') and os.path.exists('/certs/cert.pem')):
+        run(bottle_app,
+            host='0.0.0.0',
+            port=8104,
+            server='gunicorn',
+            keyfile='/certs/key.pem',
+            certfile='/certs/cert.pem')
+    else:
+        # dev mode
+        run(bottle_app,
+            host='0.0.0.0',
+            port=8104,
+            server='gunicorn',
+            debug=True,
+            reloader=True)
 
 
 if __name__ == '__main__':
