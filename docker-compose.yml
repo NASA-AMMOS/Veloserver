@@ -1,0 +1,10 @@
+services:
+  veloserver:
+    image: ghcr.io/nasa-ammos/veloserver:development
+    ports:
+      - 8104:8104
+    restart: on-failure
+    volumes:
+      - ./.ecmwfapirc:/root/.ecmwfapirc/
+      - ./.certs:/certs
+      - ./.cache:/home/veloserver/cache
