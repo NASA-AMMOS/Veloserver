@@ -42,7 +42,6 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
-.cache
 nosetests.xml
 coverage.xml
 *.cover
@@ -161,8 +160,17 @@ cython_debug/
 
 # Other
 *~
-.*
 cache/
 __pycache__/
 output/
 certs/
+
+# veloserver volume mounts
+/.cache/*
+!/.cache/.gitkeep
+
+/.certs/*
+!/.certs/.gitkeep
+
+/.ecmwfapirc/*
+!/.ecmwfapirc/.gitkeep
