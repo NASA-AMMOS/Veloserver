@@ -1,0 +1,24 @@
+{
+  "name": "veloserver",
+  "version": "1.0.0",
+  "description": "A geospatial data visualization server designed to dynamically return velocity data such as winds and ocean currents from weather models and other datasets",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NASA-AMMOS/Veloserver.git"
+  },
+  "keywords": [
+    "server",
+    "python",
+    "geospatial",
+    "gis",
+    "wind",
+    "velocity",
+    "currents",
+    "grib",
+    "hrrr",
+    "ecmwf",
+    "gfs",
+    "data",
+    "visualization"
+  ]
+}
