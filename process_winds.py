@@ -165,7 +165,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
                               download_file]
         with open(output_file, 'w') as f:
             print(' '.join(grib2json_commands))
-            subprocess.run(grib2json_commands, stdout=f, text=True)
+            subprocess.run(grib2json_commands, stdout=f, text=True, timeout=60)
             print('Created', output_file)
 
     return output_file
