@@ -8,7 +8,7 @@ WORKDIR /tmp/
 
 # Install grib2json
 RUN apt-get update && apt-get install -y git maven
-RUN git clone https://github.com/cambecc/grib2json.git && \
+RUN git clone https://github.com/jtroberts/grib2json.git && \
     cd grib2json && \
     mvn package && \
     tar -xvzf  target/grib2json-0.8.0-SNAPSHOT.tar.gz && \
