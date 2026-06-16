@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y \
     openssh-client \
     gfortran \
     --no-install-recommends && rm -r /var/lib/apt/lists/* \
-    && wget ftp://ftp.cpc.ncep.noaa.gov/wd51we/wgrib2/wgrib2.tgz -O /tmp/wgrib2.tgz \
+    && wget https://ftp.cpc.ncep.noaa.gov/wd51we/wgrib2/wgrib2.tgz \
     && mkdir -p /usr/local/grib2/ \
     && tar -xf /tmp/wgrib2.tgz -C /tmp/ \
     && rm -r /tmp/wgrib2.tgz \
