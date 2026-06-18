@@ -19,7 +19,9 @@ from herbie import Herbie
 from ecmwfapi import ECMWFDataServer
 
 HRRR_PRODUCT_COLORMAPS = {
-    'winds':         {'cmap': 'viridis',   'label': 'Wind Speed (m/s)'},
+    'wind_speed':    {'cmap': 'viridis',   'label': 'Wind Speed (m/s)'},
+    'wind_u':        {'cmap': 'RdBu_r',   'label': 'Wind U Component (m/s)'},
+    'wind_v':        {'cmap': 'RdBu_r',   'label': 'Wind V Component (m/s)'},
     'temp_2m':       {'cmap': 'RdYlBu_r', 'label': 'Temperature (K)'},
     'pbl_height':    {'cmap': 'plasma',   'label': 'PBL Height (m)'},
     'smoke_massden': {'cmap': 'YlOrRd',   'label': 'Smoke Mass Density (µg/m³)', 'scale': 1e9, 'vmin': 0, 'vmax': 250},
@@ -80,8 +82,8 @@ def _render_colormap_png(grib_file, output_file, product):
 
 def _ensure_3857_geotiff(product, date, hour, cache_dir):
     """Download native HRRR GRIB and produce a Cloud-Optimized GeoTIFF in EPSG:3857."""
-    hour_safe = hour.replace(':', '')
-    cog_file = cache_dir + f'/hrrr-{product}-{date}T{hour_safe}-3857-cog.tif'
+    parsed_hour = hour.replace(':', '')
+    cog_file = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-cog.tif'
     if os.path.exists(cog_file):
         return cog_file
 
@@ -95,18 +97,18 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
     grib_file = str(H.download(search, verbose=False))
 
     pid = os.getpid()
-    tmp_tif = cache_dir + f'/hrrr-{product}-{date}T{hour_safe}-3857-tmp-{pid}.tif'
-    tmp_cog = cache_dir + f'/hrrr-{product}-{date}T{hour_safe}-3857-cog-{pid}.tmp.tif'
+    tmp_tif = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-tmp-{pid}.tif'
+    tmp_cog = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-cog-{pid}.tmp.tif'
 
     try:
-        return _generate_cog(product, date, hour_safe, grib_file, tmp_tif, tmp_cog, cog_file)
+        return _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file)
     except Exception as e:
         for f in [tmp_tif, tmp_cog]:
             if os.path.exists(f):
                 os.remove(f)
         raise
 
-def _generate_cog(product, date, hour_safe, grib_file, tmp_tif, tmp_cog, cog_file):
+def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file):
     # Step 1: warp to EPSG:3857, Float32 with nodata
     subprocess.run([
         'gdalwarp',
@@ -123,20 +125,25 @@ def _generate_cog(product, date, hour_safe, grib_file, tmp_tif, tmp_cog, cog_fil
         grib_file, tmp_tif
     ], check=True)
 
-    # For winds: compute magnitude from U/V bands and write single-band GeoTIFF
-    if product == 'winds':
-        tmp_mag = cache_dir + f'/hrrr-{product}-{date}T{hour_safe}-3857-mag.tif'
+    # For wind products: compute magnitude or extract U/V component
+    if product in ('wind_speed', 'wind_u', 'wind_v'):
+        tmp_mag = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-mag.tif'
         with rasterio.open(tmp_tif) as src:
             u = src.read(1).astype(np.float32)
             v = src.read(2).astype(np.float32) if src.count >= 2 else np.zeros_like(u)
             nodata = src.nodata
             mask = (u == nodata) | (v == nodata) if nodata is not None else np.zeros_like(u, dtype=bool)
-            mag = np.sqrt(u**2 + v**2)
-            mag[mask] = 9999
+            if product == 'wind_speed':
+                band = np.sqrt(u**2 + v**2)
+            elif product == 'wind_u':
+                band = u
+            else:
+                band = v
+            band[mask] = 9999
             profile = src.profile.copy()
         profile.update(count=1, nodata=9999)
         with rasterio.open(tmp_mag, 'w', **profile) as dst:
-            dst.write(mag, 1)
+            dst.write(band, 1)
         os.remove(tmp_tif)
         os.rename(tmp_mag, tmp_tif)
 
@@ -179,7 +186,6 @@ def render_wms_tile(model, product, iso_string, bbox, width, height, srs='EPSG:4
     if model != 'hrrr':
         raise ValueError(f'WMS not yet supported for model: {model}')
 
-    # Ensure cached EPSG:3857 GeoTIFF exists (generated once per product/datetime)
     cache_dir = config.APP_CONFIG['CACHE_DIR']
     tif_3857 = _ensure_3857_geotiff(product, date, hour, cache_dir)
 
@@ -224,14 +230,12 @@ def render_wms_tile(model, product, iso_string, bbox, width, height, srs='EPSG:4
     cmap_fn = plt.get_cmap(cmap_info['cmap'])
     rgba = cmap_fn(norm(data))
 
-    # Apply transparency: nodata and areas outside HRRR coverage = transparent
     if transparent:
         mask = np.isnan(data)
         if alpha is not None:
             mask = mask | (alpha == 0)
         rgba[mask] = (0, 0, 0, 0)
 
-    # Convert to uint8 PNG via PIL
     from PIL import Image
     img_uint8 = (rgba * 255).astype(np.uint8)
     img = Image.fromarray(img_uint8, mode='RGBA')
@@ -242,11 +246,21 @@ def render_wms_tile(model, product, iso_string, bbox, width, height, srs='EPSG:4
 
 
 HRRR_PRODUCTS = {
-    'winds':         {'search': ':[U|V]GRD:10 m'},
+    'wind_speed':    {'search': ':[U|V]GRD:10 m'},
+    'wind_u':        {'search': ':[U|V]GRD:10 m'},
+    'wind_v':        {'search': ':[U|V]GRD:10 m'},
     'temp_2m':       {'search': ':TMP:2 m above ground:'},
     'pbl_height':    {'search': ':HPBL:surface:'},
     'smoke_massden': {'search': ':MASSDEN:8 m above ground:'},
     'precip_rate':   {'search': ':PRATE:surface:'},
+    'rh_2m':         {'search': ':RH:2 m above ground:'},
+    'wind_gust':     {'search': ':GUST:surface:'},
+    'dewpoint_2m':   {'search': ':DPT:2 m above ground:'},
+    'visibility':    {'search': ':VIS:surface:'},
+    'cape':          {'search': ':CAPE:surface:'},
+    'lightning':     {'search': ':LTNG:entire atmosphere:'},
+    'cloud_cover':   {'search': ':TCDC:entire atmosphere:'},
+    'smoke_column':  {'search': ':COLMD:entire atmosphere'},
 }
 def parse_arguments():
     """

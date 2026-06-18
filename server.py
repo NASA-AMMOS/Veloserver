@@ -220,6 +220,8 @@ def main():
             port=8104,
             server='gunicorn',
             workers=4,
+            threads=2,
+            worker_class='gthread',
             timeout=300,
             debug=True,
             reloader=True)
