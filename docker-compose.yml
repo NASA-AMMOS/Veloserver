@@ -5,6 +5,7 @@ services:
       - 8104:8104
     restart: on-failure
     volumes:
+      - .:/home/veloserver
       - ./.ecmwfapirc:/root/.ecmwfapirc/
       - ./.certs:/certs
       - ./.cache:/home/veloserver/cache

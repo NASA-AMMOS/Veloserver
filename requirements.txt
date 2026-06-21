@@ -4,3 +4,8 @@ requests==2.32.4
 argparse==1.4.0
 herbie-data==2024.8.0
 ecmwf-api-client==1.6.3
+rasterio==1.3.11
+pyproj==3.6.1
+numpy==2.0.2
+matplotlib==3.9.4
+Pillow==10.4.0

@@ -1,10 +1,13 @@
 import os
 import config
 import shutil
-from process_data import process_hrrr, process_ecmwf, process_gfs
+from process_rasters import process_hrrr, process_ecmwf, process_gfs
 from datetime import datetime
 
 
+# This class handles the legacy grib2json pipeline used for wind vector
+# (Earth.js-style) rendering. For COG-based raster layers (MMGIS/TiTiler),
+# see the /cog and /wms routes in server.py which use process_rasters.py directly.
 class App():
     def __init__(self, *args, **kwargs):
         # clear out any pre-existing cache on server startup
