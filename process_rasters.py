@@ -108,6 +108,13 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
         )
         grib_file = str(H.download(search, verbose=False))
 
+        gdalinfo_result = subprocess.run(['gdalinfo', grib_file], capture_output=True)
+        if not os.path.exists(grib_file) or gdalinfo_result.returncode != 0:
+            print(f'[COG] GRIB file missing or corrupt, re-downloading: {grib_file}')
+            if os.path.exists(grib_file):
+                os.remove(grib_file)
+            grib_file = str(H.download(search, verbose=False))
+
         uid = f'{os.getpid()}-{threading.get_ident()}'
         tmp_tif = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-tmp-{uid}.tif'
         tmp_cog = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-cog-{uid}.tmp.tif'
@@ -129,7 +136,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
         'gdalwarp',
         '-of', 'GTiff',
         '-t_srs', 'EPSG:3857',
-        '-r', 'bilinear',
+        '-r', 'near',
         '-ot', 'Float32',
         '-srcnodata', 'nan',
         '-dstnodata', '9999',
@@ -140,31 +147,49 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
         grib_file, tmp_tif
     ], check=True)
 
-    if product in ('wind_speed', 'wind_u', 'wind_v'):
+    if product == 'winds':
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_mag = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-mag-{uid}.tif'
+        tmp_uvs = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-uvs-{uid}.tif'
         with rasterio.open(tmp_tif) as src:
             u = src.read(1).astype(np.float32)
             v = src.read(2).astype(np.float32) if src.count >= 2 else np.zeros_like(u)
             nodata = src.nodata
             mask = (u == nodata) | (v == nodata) if nodata is not None else np.zeros_like(u, dtype=bool)
-            if product == 'wind_speed':
-                band = np.sqrt(u**2 + v**2)
-            elif product == 'wind_u':
-                band = u
-            else:
-                band = v
+            speed = np.sqrt(u**2 + v**2)
+            u[mask] = 9999
+            v[mask] = 9999
+            speed[mask] = 9999
+            profile = src.profile.copy()
+        profile.update(count=3, nodata=9999)
+        with rasterio.open(tmp_uvs, 'w', **profile) as dst:
+            dst.write(u, 1)
+            dst.write(v, 2)
+            dst.write(speed, 3)
+        os.remove(tmp_tif)
+        os.rename(tmp_uvs, tmp_tif)
+
+    elif product == 'smoke_massden':
+        # HRRR near-surface smoke (MASSDEN) is native kg/m^3; convert to the
+        # conventional µg/m^3 to make it interpretable with other pm 2.5 products.
+        uid = f'{os.getpid()}-{threading.get_ident()}'
+        tmp_scaled = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-scaled-{uid}.tif'
+        with rasterio.open(tmp_tif) as src:
+            band = src.read(1).astype(np.float32)
+            nodata = src.nodata
+            mask = (band == nodata) if nodata is not None else np.zeros_like(band, dtype=bool)
+            band = band * 1e9
             band[mask] = 9999
             profile = src.profile.copy()
         profile.update(count=1, nodata=9999)
-        with rasterio.open(tmp_mag, 'w', **profile) as dst:
+        with rasterio.open(tmp_scaled, 'w', **profile) as dst:
             dst.write(band, 1)
         os.remove(tmp_tif)
-        os.rename(tmp_mag, tmp_tif)
+        os.rename(tmp_scaled, tmp_tif)
 
-    # Step 2: build overviews with bilinear resampling
+    # Step 2: build overviews with nearest-neighbor (keep true model values at
+    # lower zooms too; no blending). Switch to 'average' if zoomed-out looks noisy.
     subprocess.run([
-        'gdaladdo', '-r', 'bilinear',
+        'gdaladdo', '-r', 'nearest',
         tmp_tif,
         '2', '4', '8', '16', '32'
     ], check=True)
@@ -189,13 +214,8 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
     print(f'Created COG {cog_file}')
     return cog_file
 
-
-
 HRRR_PRODUCTS = {
     'winds':         {'search': ':[U|V]GRD:10 m'},
-    'wind_speed':    {'search': ':[U|V]GRD:10 m'},
-    'wind_u':        {'search': ':[U|V]GRD:10 m'},
-    'wind_v':        {'search': ':[U|V]GRD:10 m'},
     'temp_2m':       {'search': ':TMP:2 m above ground:'},
     'pbl_height':    {'search': ':HPBL:surface:'},
     'smoke_massden': {'search': ':MASSDEN:8 m above ground:'},
@@ -203,11 +223,6 @@ HRRR_PRODUCTS = {
     'rh_2m':         {'search': ':RH:2 m above ground:'},
     'wind_gust':     {'search': ':GUST:surface:'},
     'dewpoint_2m':   {'search': ':DPT:2 m above ground:'},
-    'visibility':    {'search': ':VIS:surface:'},
-    'cape':          {'search': ':CAPE:surface:'},
-    'lightning':     {'search': ':LTNG:entire atmosphere:'},
-    'cloud_cover':   {'search': ':TCDC:entire atmosphere:'},
-    'smoke_column':  {'search': ':COLMD:entire atmosphere'},
 }
 def parse_arguments():
     """
