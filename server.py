@@ -136,7 +136,7 @@ def main():
             host='0.0.0.0',
             port=8104,
             server='gunicorn',
-            timeout=300,
+            timeout=60,
             keyfile='/certs/key.pem',
             certfile='/certs/cert.pem')
     else:
@@ -146,7 +146,7 @@ def main():
             port=8104,
             server='gunicorn',
             workers=4,
-            timeout=300,
+            timeout=60,
             debug=True,
             reloader=True)
 
