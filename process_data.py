@@ -18,6 +18,21 @@ from herbie import Herbie
 from ecmwfapi import ECMWFDataServer
 
 
+def _safe_path(base_dir, filename):
+    """Join filename under base_dir and refuse anything that escapes it.
+
+    Cache/output filenames are built from values that can come from CLI args
+    (agentic use) or HTTP requests. Confining the constructed path inside its
+    base directory stops a '..'-laden component from reading or writing
+    arbitrary files (path-injection hardening, Sonar S2083 / S8707).
+    """
+    base = os.path.abspath(base_dir)
+    resolved = os.path.abspath(os.path.join(base, filename))
+    if resolved != base and not resolved.startswith(base + os.sep):
+        raise ValueError(f'Refusing path outside {base_dir!r}: {filename!r}')
+    return resolved
+
+
 
 HRRR_PRODUCT_COLORMAPS = {
     'wind_speed':    {'cmap': 'viridis',   'label': 'Wind Speed (m/s)'},
@@ -33,8 +48,9 @@ HRRR_PRODUCT_COLORMAPS = {
 def _create_png(grib_file, output_file, product):
     cmap_info = HRRR_PRODUCT_COLORMAPS.get(product, {'cmap': 'viridis', 'label': product})
 
-    # Convert GRIB2 to GeoTIFF first
-    tmp_tif = output_file.replace('.png', '_tmp.tif')
+    # Convert GRIB2 to GeoTIFF first (temp file confined to the output dir, S8707)
+    tmp_tif = _safe_path(os.path.dirname(output_file),
+                         os.path.basename(output_file).replace('.png', '_tmp.tif'))
     subprocess.run(['gdal_translate', '-of', 'GTiff', grib_file, tmp_tif], check=True)
 
     with rasterio.open(tmp_tif) as src:
@@ -83,8 +99,15 @@ def _create_png(grib_file, output_file, product):
 
 def _ensure_3857_geotiff(product, date, hour, cache_dir):
     """Download native HRRR GRIB and produce a Cloud-Optimized GeoTIFF in EPSG:3857."""
+    # Bind product to the matching allowlist key, so the value interpolated into
+    # the file paths below comes from our own dict and never from raw request
+    # input (path-injection hardening, Sonar S2083).
+    if product not in HRRR_PRODUCTS:
+        raise ValueError(f'Unknown product: {product}')
+    product = next(p for p in HRRR_PRODUCTS if p == product)
+    date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
     parsed_hour = hour.replace(':', '')
-    cog_file = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-cog.tif'
+    cog_file = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-cog.tif')
     if os.path.exists(cog_file):
         return cog_file
 
@@ -92,7 +115,7 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
     # The in-memory threading.Lock only works within one gunicorn worker process.
     # With multiple workers, they race to download the same GRIB file causing
     # GDAL "not a supported file format" errors on partial reads.
-    lock_path = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}.lock'
+    lock_path = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}.lock')
     lock_file = open(lock_path, 'w')
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -116,8 +139,8 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
             grib_file = str(H.download(search, verbose=False))
 
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_tif = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-tmp-{uid}.tif'
-        tmp_cog = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-cog-{uid}.tmp.tif'
+        tmp_tif = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-tmp-{uid}.tif')
+        tmp_cog = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-cog-{uid}.tmp.tif')
 
         try:
             return _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir)
@@ -131,6 +154,11 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
         lock_file.close()
 
 def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir):
+    # Bind product to its allowlist key before it's interpolated into the temp
+    # file paths below, so the value can't come from raw request input (S2083).
+    if product not in HRRR_PRODUCTS:
+        raise ValueError(f'Unknown product: {product}')
+    product = next(p for p in HRRR_PRODUCTS if p == product)
     # Step 1: warp to EPSG:3857, Float32 with nodata
     subprocess.run([
         'gdalwarp',
@@ -149,7 +177,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
 
     if product == 'winds':
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_uvs = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-uvs-{uid}.tif'
+        tmp_uvs = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-uvs-{uid}.tif')
         with rasterio.open(tmp_tif) as src:
             u = src.read(1).astype(np.float32)
             v = src.read(2).astype(np.float32) if src.count >= 2 else np.zeros_like(u)
@@ -172,7 +200,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
         # HRRR near-surface smoke (MASSDEN) is native kg/m^3; convert to the
         # conventional µg/m^3 to make it interpretable with other pm 2.5 products.
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_scaled = cache_dir + f'/hrrr-{product}-{date}T{parsed_hour}-3857-scaled-{uid}.tif'
+        tmp_scaled = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-scaled-{uid}.tif')
         with rasterio.open(tmp_tif) as src:
             band = src.read(1).astype(np.float32)
             nodata = src.nodata
@@ -272,6 +300,8 @@ def lon360(lon):
 def process_hrrr(product, projwin, date, time, output_dir, format):
     if product not in HRRR_PRODUCTS:
         return f'Unknown product: {product}. Available: {list(HRRR_PRODUCTS.keys())}'
+    # Use the allowlist key (not the raw arg) in the file paths below (S2083).
+    product = next(p for p in HRRR_PRODUCTS if p == product)
 
     if format == 'gribjson' and product != 'winds':
         return (f"gribjson is only available for the 'winds' product; "
@@ -282,10 +312,11 @@ def process_hrrr(product, projwin, date, time, output_dir, format):
         projwin = [-180, 90, 180, -90]
 
     hour = datetime.strptime(time, '%H:%M:%S').strftime('%H:00:00')
+    date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
     search = HRRR_PRODUCTS[product]['search']
 
     # Regrid to latlon
-    regrid_file = output_dir + f'/hrrr-{product}-{date}T{hour}.grib2'
+    regrid_file = _safe_path(output_dir, f'hrrr-{product}-{date}T{hour}.grib2')
     if not os.path.exists(regrid_file):
         H = Herbie(
             date + ' ' + hour,
@@ -309,8 +340,8 @@ def process_hrrr(product, projwin, date, time, output_dir, format):
     # Subset if projwin provided
     output_grib = regrid_file
     if projwin != [-180, 90, 180, -90]:
-        projwin_string = '_'.join(map(str, projwin))
-        subset_file = output_dir + f'/hrrr-{product}-{projwin_string}-{date}T{hour}.grib2'
+        projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
+        subset_file = _safe_path(output_dir, f'hrrr-{product}-{projwin_string}-{date}T{hour}.grib2')
         if not os.path.exists(subset_file):
             wgrib2_commands = ['wgrib2', regrid_file,
                                '-small_grib',
@@ -349,10 +380,11 @@ def process_ecmwf(projwin, date, time, output_dir, format):
 
     # Round down to the nearest 6th hour
     hour = '00:00:00'
+    date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
 
     # Get GRIB from ECMWFDataServer
-    download_file = output_dir + '/ecmwf-uv-' + date + 'T' + hour + '.grib'
-    output_file = output_dir + '/ecmwf-uv-' + date + 'T' + hour + '.json'
+    download_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + '.grib')
+    output_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + '.json')
     if not os.path.isfile(download_file):
         server = ECMWFDataServer()
         server.retrieve({
@@ -375,9 +407,9 @@ def process_ecmwf(projwin, date, time, output_dir, format):
 
     # Subset GRIB file
     if projwin is not None:
-        projwin_string = '_'.join(map(str, projwin))
-        subset_file = output_dir + '/ecmwf-uv-' + \
-            projwin_string + '-' + date + 'T' + hour + '.grib'
+        projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
+        subset_file = _safe_path(output_dir,
+                                 'ecmwf-uv-' + projwin_string + '-' + date + 'T' + hour + '.grib')
         if not os.path.exists(subset_file):
             wgrib2_commands = ['wgrib2',
                                download_file,
@@ -410,7 +442,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
 def process_gfs(projwin, date, time, output_dir, format):
     print('Processing GFS data')
     if projwin is not None:
-        projwin_string = '_'.join(map(str, projwin))
+        projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
     else:
         projwin_string = 'global'
 
@@ -419,9 +451,9 @@ def process_gfs(projwin, date, time, output_dir, format):
     rounded_hour = (time_obj.hour // 6) * 6
     hour = time_obj.replace(hour=rounded_hour).strftime('%H:00:00')
 
-    # Download subsetted GFS GRIB file
-    download_file = output_dir + '/gfs-' + projwin_string + '-' + date + 'T' + hour + '.grib'
-    output_file = output_dir + '/gfs-' + projwin_string + '-' + date + 'T' + hour + '.json'
+    # Download subsetted GFS GRIB file (date already validated by strptime above)
+    download_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + '.grib')
+    output_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + '.json')
     print('Checking for existing', download_file)
     if not os.path.isfile(download_file):
         url_base = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'

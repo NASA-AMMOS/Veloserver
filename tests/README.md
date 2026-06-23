@@ -1,8 +1,7 @@
 # Veloserver integration tests
 
 End-to-end tests that exercise every route against a **running** server and
-validate the real responses (velocity JSON, GeoTIFF, PNG, COG). Stdlib only —
-no pytest or other dependencies required.
+validate the real responses (velocity JSON, GeoTIFF, PNG, COG).
 
 ## Prerequisites
 

@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 from bottle import Bottle, run, request, response, static_file
 from app import App
-from process_rasters import _ensure_3857_geotiff
+from process_data import _ensure_3857_geotiff, HRRR_PRODUCTS, _safe_path
 import config
 
 bottle_app = Bottle()
@@ -10,6 +10,11 @@ dataApp = App()
 
 
 def _serve_cog(product, time_param):
+    # product is interpolated into the COG file path, so restrict it to the
+    # known set before any I/O to sastify sunar audit.
+    if product not in HRRR_PRODUCTS:
+        response.status = 400
+        return f'Unknown product: {product}'
     if not time_param:
         response.status = 400
         return 'time parameter is required'
@@ -20,7 +25,7 @@ def _serve_cog(product, time_param):
     hour_safe = hour.replace(':', '')
     print(f'[COG] parsed → date={date!r}, hour={hour!r}, hour_safe={hour_safe!r}')
     cache_dir = config.APP_CONFIG['CACHE_DIR']
-    cog_path = cache_dir + f'/hrrr-{product}-{date}T{hour_safe}-3857-cog.tif'
+    cog_path = _safe_path(cache_dir, f'hrrr-{product}-{date}T{hour_safe}-3857-cog.tif')
 
     try:
         if not os.path.exists(cog_path):
@@ -95,24 +100,42 @@ def get_data(model, format, datetime):
     return data
 
 
-@bottle_app.route('/<model>/<format>/<datetime>/<projwin>')
+@bottle_app.route('/<model>/<seg2>/<seg3>/<seg4>')
 @enable_cors
-def get_data_projwin(model, format, datetime, projwin):
-    projwin = projwin.split(',')
-    if len(projwin) == 4:
-        (output_format, data) = dataApp.get_data(request,
-                                                 model,
-                                                 format,
-                                                 datetime,
-                                                 projwin)
-        response.content_type = output_format
+def get_data_four_segment(model, seg2, seg3, seg4):
+    """
+    The router matches a URL by counting the slash-separated parts and filling
+    each named slot left-to-right. Adding the product route gave the older projwin route a same-length twin.
+    With both routes registered, two different 4-part shapes existed:
+
+        /<model>/<format>/<datetime>/<projwin>   (bbox, no product)
+        /<model>/<product>/<format>/<datetime>   (product, no bbox)
+
+    Bottle has no way to know which one a 4-part URL means, and it matched the
+    product shape for both. So a bbox request:
+
+        GET /gfs/gribjson/2024-03-05T00:00:00/-105,41,-104,40
+
+    was read as product=gribjson, format=2024-03-05T00:00:00,
+    datetime=-105,41,-104,40 -- the bbox landed in the <datetime> slot and 500'd
+    when app.py called datetime.fromisoformat() on it. This hit every no-product
+    bbox request (GFS/ECMWF always, since they have no product; and the bare
+    HRRR /<model>/<format>/<datetime>/<projwin> form). The 5-part product+bbox
+    route below was never ambiguous and stayed separate.
+
+    Folding both 4-part shapes into this one handler removes the guess: a bbox is
+    the only part that ever contains commas, so the comma in the final segment
+    decides which shape it is.
+    """
+    if ',' in seg4:
+        format, datetime, projwin = seg2, seg3, seg4.split(',')
+        if len(projwin) != 4:
+            response.status = 400
+            return 'Invalid projwin. Must be in format: ulx,uly,lrx,lry'
+        (output_format, data) = dataApp.get_data(request, model, format, datetime, projwin)
     else:
-        data = 'Invalid projwin. Must be in format: ulx,uly,lrx,lry'
-    return data
-@bottle_app.route('/<model>/<product>/<format>/<datetime>')
-@enable_cors
-def get_data_product(model, product, format, datetime):
-    (output_format, data) = dataApp.get_data(request, model, format, datetime, None, product)
+        product, format, datetime = seg2, seg3, seg4
+        (output_format, data) = dataApp.get_data(request, model, format, datetime, None, product)
     response.content_type = output_format
     return data
 
@@ -125,6 +148,7 @@ def get_data_product_projwin(model, product, format, datetime, projwin):
         (output_format, data) = dataApp.get_data(request, model, format, datetime, projwin, product)
         response.content_type = output_format
     else:
+        response.status = 400
         data = 'Invalid projwin. Must be in format: ulx,uly,lrx,lry'
     return data
 

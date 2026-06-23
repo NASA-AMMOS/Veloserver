@@ -32,6 +32,13 @@ def run(r):
     _expect_status(r, "malformed projwin (3 vals) -> 400",
                    f"/hrrr/winds/gribjson/{T}/1,2,3", 400)
 
+    r.section("Path-injection / malformed input should return 400 (Sonar S2083)")
+    _expect_status(r, "COG unknown product -> 400", f"/cog/bogus/{T}Z", 400)
+    _expect_status(r, "COG product traversal -> 400", f"/cog/..%2f..%2fetc/{T}Z", 400)
+    _expect_status(r, "projwin non-numeric -> 400", f"/gfs/gribjson/{T}/a,b,c,d", 400)
+    _expect_status(r, "projwin dotdot -> 400", f"/gfs/gribjson/{T}/..,..,..,..", 400)
+    _expect_status(r, "unknown format -> 400", f"/gfs/xml/{T}", 400)
+
     r.section("Valid requests should return 200")
     _expect_status(r, "winds gribjson -> 200", f"/hrrr/winds/gribjson/{T}", 200)
     _expect_status(r, "scalar geotiff -> 200", f"/hrrr/temp_2m/geotiff/{T}", 200)

@@ -1,9 +1,17 @@
 import os
+import math
 import config
 import shutil
 from bottle import response as bottle_response
-from process_data import process_hrrr, process_ecmwf, process_gfs
+from process_data import process_hrrr, process_ecmwf, process_gfs, HRRR_PRODUCTS
 from datetime import datetime
+
+# Allowlists for user-supplied URL tokens. Every value that ends up in a
+# filesystem path or subprocess argument must come from one of these closed
+# sets (or be a parsed number/date), so untrusted input can't steer file I/O
+# (path-injection hardening, Sonar S2083).
+ALLOWED_MODELS = {'hrrr', 'ecmwf', 'gfs'}
+ALLOWED_FORMATS = {'gribjson', 'geotiff', 'png'}
 
 
 class App():
@@ -18,6 +26,29 @@ class App():
 
     def get_data(self, request, model, format, iso_string, projwin=None, product='winds'):
         response = ''
+        json_ct = config.APP_CONFIG["AVAILABLE_FORMATS"]["json"]
+
+        # Validate all user-supplied tokens before they reach any path/subprocess.
+        if model not in ALLOWED_MODELS:
+            bottle_response.status = 400
+            return (json_ct, f'Unsupported model: {model}')
+        if format not in ALLOWED_FORMATS:
+            bottle_response.status = 400
+            return (json_ct, f'Unsupported format: {format}')
+        if model == 'hrrr' and product not in HRRR_PRODUCTS:
+            bottle_response.status = 400
+            return (json_ct, f'Unknown product: {product}')
+        if projwin is not None:
+            try:
+                projwin = [float(v) for v in projwin]
+            except (TypeError, ValueError):
+                projwin = None
+            if not projwin or len(projwin) != 4 or not all(map(math.isfinite, projwin)):
+                bottle_response.status = 400
+                return (json_ct, 'Invalid projwin: expected 4 numbers ulx,uly,lrx,lry')
+
+        # fromisoformat rejects anything that isn't a real ISO datetime, so the
+        # date/hour strings derived from it below are safe to use in paths.
         datetime_object = datetime.fromisoformat(iso_string)
 
         if model == 'hrrr':
