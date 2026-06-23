@@ -15,7 +15,7 @@ ALLOWED_FORMATS = {'gribjson', 'geotiff', 'png'}
 
 
 class App():
-    def __init__(self, *args, **kwargs):
+    def __init__(self):
         # clear out any pre-existing cache on server startup
         if os.path.exists(config.APP_CONFIG["CACHE_DIR"]):
             if config.APP_CONFIG["CACHE_FILES"] is False:
@@ -24,7 +24,7 @@ class App():
         if not os.path.exists(config.APP_CONFIG["CACHE_DIR"]):
             os.makedirs(config.APP_CONFIG["CACHE_DIR"])
 
-    def get_data(self, request, model, format, iso_string, projwin=None, product='winds'):
+    def get_data(self, model, format, iso_string, projwin=None, product='winds'):
         response = ''
         json_ct = config.APP_CONFIG["AVAILABLE_FORMATS"]["json"]
 
@@ -79,9 +79,7 @@ class App():
         elif model == 'ecmwf':
             output = process_ecmwf(projwin,
                                    datetime_object.strftime("%Y-%m-%d"),
-                                   datetime_object.strftime("%H:%M:%S"),
-                                   config.APP_CONFIG["CACHE_DIR"],
-                                   format)
+                                   config.APP_CONFIG["CACHE_DIR"])
             if not os.path.isfile(output):
                 bottle_response.status = 400
                 return (config.APP_CONFIG["AVAILABLE_FORMATS"]["json"], output)
@@ -93,8 +91,7 @@ class App():
             output = process_gfs(projwin,
                                  datetime_object.strftime("%Y-%m-%d"),
                                  datetime_object.strftime("%H:%M:%S"),
-                                 config.APP_CONFIG["CACHE_DIR"],
-                                 format)
+                                 config.APP_CONFIG["CACHE_DIR"])
             if not os.path.isfile(output):
                 bottle_response.status = 400
                 return (config.APP_CONFIG["AVAILABLE_FORMATS"]["json"], output)

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from bottle import Bottle, run, request, response, static_file
 from app import App
 from process_data import _ensure_3857_geotiff, HRRR_PRODUCTS, _safe_path
@@ -31,7 +31,7 @@ def _serve_cog(product, time_param):
         if not os.path.exists(cog_path):
             cog_path = _ensure_3857_geotiff(product, date, hour, cache_dir)
         return static_file(os.path.basename(cog_path), root=cache_dir, mimetype='image/tiff')
-    except (FileNotFoundError, ValueError) as e:
+    except (FileNotFoundError, ValueError):
         response.status = 404
         return f'No HRRR data available for {product} at {time_param}'
     except Exception as e:
@@ -91,8 +91,7 @@ def server_swagger(filepath):
 @bottle_app.route('/<model>/<format>/<datetime>')
 @enable_cors
 def get_data(model, format, datetime):
-    (output_format, data) = dataApp.get_data(request,
-                                             model,
+    (output_format, data) = dataApp.get_data(model,
                                              format,
                                              datetime,
                                              None)
@@ -132,10 +131,10 @@ def get_data_four_segment(model, seg2, seg3, seg4):
         if len(projwin) != 4:
             response.status = 400
             return 'Invalid projwin. Must be in format: ulx,uly,lrx,lry'
-        (output_format, data) = dataApp.get_data(request, model, format, datetime, projwin)
+        (output_format, data) = dataApp.get_data(model, format, datetime, projwin)
     else:
         product, format, datetime = seg2, seg3, seg4
-        (output_format, data) = dataApp.get_data(request, model, format, datetime, None, product)
+        (output_format, data) = dataApp.get_data(model, format, datetime, None, product)
     response.content_type = output_format
     return data
 
@@ -145,7 +144,7 @@ def get_data_four_segment(model, seg2, seg3, seg4):
 def get_data_product_projwin(model, product, format, datetime, projwin):
     projwin = projwin.split(',')
     if len(projwin) == 4:
-        (output_format, data) = dataApp.get_data(request, model, format, datetime, projwin, product)
+        (output_format, data) = dataApp.get_data(model, format, datetime, projwin, product)
         response.content_type = output_format
     else:
         response.status = 400

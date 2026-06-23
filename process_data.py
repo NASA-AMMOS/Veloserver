@@ -12,7 +12,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 import rasterio
-import config
 from datetime import datetime
 from herbie import Herbie
 from ecmwfapi import ECMWFDataServer
@@ -144,7 +143,7 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
 
         try:
             return _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir)
-        except Exception as e:
+        except Exception:
             for f in [tmp_tif, tmp_cog]:
                 if os.path.exists(f):
                     os.remove(f)
@@ -375,7 +374,7 @@ def process_hrrr(product, projwin, date, time, output_dir, format):
 
     return output_file
 
-def process_ecmwf(projwin, date, time, output_dir, format):
+def process_ecmwf(projwin, date, output_dir):
     print('Processing ECMWF data')
 
     # Round down to the nearest 6th hour
@@ -439,7 +438,7 @@ def process_ecmwf(projwin, date, time, output_dir, format):
     return output_file
 
 
-def process_gfs(projwin, date, time, output_dir, format):
+def process_gfs(projwin, date, time, output_dir):
     print('Processing GFS data')
     if projwin is not None:
         projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
@@ -493,8 +492,8 @@ def process_gfs(projwin, date, time, output_dir, format):
     return output_file
 
 
-def process_user_defined(projwin, date, time, output_dir, format, definition):
-    print('Processing user defined model')
+def process_user_defined(definition):
+    print(f'Processing user defined model: {definition}')
 
 
 def main():
@@ -506,19 +505,16 @@ def main():
           args.time, args.output_dir)
 
     if args.user_defined:
-        process_user_defined(args.projwin, args.date, args.time,
-                             args.output_dir, args.format, args.user_defined)
+        process_user_defined(args.user_defined)
         return
 
     if args.model == 'hrrr':
         process_hrrr(args.product, args.projwin, args.date, args.time,
                      args.output_dir, args.format)
     elif args.model == 'ecmwf':
-        process_ecmwf(args.projwin, args.date, args.time,
-                      args.output_dir, args.format)
+        process_ecmwf(args.projwin, args.date, args.output_dir)
     elif args.model == 'gfs':
-        process_gfs(args.projwin, args.date, args.time,
-                    args.output_dir, args.format)
+        process_gfs(args.projwin, args.date, args.time, args.output_dir)
     else:
         print('Model is not supported.')
 
