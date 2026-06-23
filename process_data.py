@@ -186,6 +186,14 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
         os.remove(tmp_tif)
         os.rename(tmp_scaled, tmp_tif)
 
+    # Label bands so the COG is self-describing for downstream consumers
+    # (gdal_translate carries these descriptions through into the final COG).
+    band_names = ['u', 'v', 'speed'] if product == 'winds' else [product]
+    with rasterio.open(tmp_tif, 'r+') as dst:
+        for i, name in enumerate(band_names, start=1):
+            if i <= dst.count:
+                dst.set_band_description(i, name)
+
     # Step 2: build overviews with nearest-neighbor (keep true model values at
     # lower zooms too; no blending). Switch to 'average' if zoomed-out looks noisy.
     subprocess.run([
@@ -264,6 +272,10 @@ def lon360(lon):
 def process_hrrr(product, projwin, date, time, output_dir, format):
     if product not in HRRR_PRODUCTS:
         return f'Unknown product: {product}. Available: {list(HRRR_PRODUCTS.keys())}'
+
+    if format == 'gribjson' and product != 'winds':
+        return (f"gribjson is only available for the 'winds' product; "
+                f"use geotiff, png, or the /cog route for '{product}'.")
 
     print(f'Processing HRRR {product}')
     if projwin is None:
