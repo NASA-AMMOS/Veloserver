@@ -1,6 +1,7 @@
 import os
+import re
 from datetime import datetime
-from bottle import Bottle, run, request, response, static_file
+from bottle import Bottle, run, request, response, static_file, abort
 from app import App
 from process_data import _ensure_3857_geotiff, HRRR_PRODUCTS, _safe_path
 import config
@@ -8,13 +9,24 @@ import config
 bottle_app = Bottle()
 dataApp = App()
 
+# Allowlist of the characters our routes actually use (word chars plus the
+# separators in dates, bboxes and products). PATH_INFO is request-controlled, so
+# it is validated against this before being normalized for routing (S2083).
+_ALLOWED_PATH_INFO = re.compile(r'\A[\w./:,+-]*\Z')
+
 
 def _serve_cog(product, time_param):
-    # product is interpolated into the COG file path, so restrict it to the
-    # known set before any I/O to sastify sunar audit.
+    # product is interpolated into the COG file path, so restrict it to the known
+    # set before any I/O (path-injection hardening, Sonar S2083). Error responses
+    # must not echo raw request input back to the client (reflected XSS, S5131):
+    # report the allowlisted product names instead of the bad value, and never
+    # reflect the raw time_param or exception text.
     if product not in HRRR_PRODUCTS:
         response.status = 400
-        return f'Unknown product: {product}'
+        return 'Unknown product. Valid products: ' + ', '.join(sorted(HRRR_PRODUCTS))
+    # Bind to the matching allowlist key, so the value reused below is a constant
+    # from our own set rather than raw request input.
+    product = next(p for p in HRRR_PRODUCTS if p == product)
     if not time_param:
         response.status = 400
         return 'time parameter is required'
@@ -33,10 +45,11 @@ def _serve_cog(product, time_param):
         return static_file(os.path.basename(cog_path), root=cache_dir, mimetype='image/tiff')
     except (FileNotFoundError, ValueError):
         response.status = 404
-        return f'No HRRR data available for {product} at {time_param}'
+        return f'No HRRR data available for {product} at the requested time'
     except Exception as e:
+        print(f'[COG] error serving {product}: {e}')
         response.status = 500
-        return f'Error serving COG: {e}'
+        return 'Error serving COG'
 
 @bottle_app.route('/cog/<product>/<time_param:path>')
 def cog_path(product, time_param):
@@ -62,7 +75,12 @@ def enable_cors(fn):
 
 @bottle_app.hook('before_request')
 def strip_path():
-    request.environ['PATH_INFO'] = request.environ['PATH_INFO'].rstrip('/')
+    path = request.environ['PATH_INFO']
+    # Reject anything outside the allowlist or containing traversal before the
+    # (validated) value is written back for routing (path-injection guard, S2083).
+    if '..' in path or not _ALLOWED_PATH_INFO.match(path):
+        abort(400, 'Invalid request path')
+    request.environ['PATH_INFO'] = path.rstrip('/')
 
 
 @bottle_app.hook('after_request')
@@ -127,14 +145,14 @@ def get_data_four_segment(model, seg2, seg3, seg4):
     decides which shape it is.
     """
     if ',' in seg4:
-        format, datetime, projwin = seg2, seg3, seg4.split(',')
+        fmt, dt, projwin = seg2, seg3, seg4.split(',')
         if len(projwin) != 4:
             response.status = 400
             return 'Invalid projwin. Must be in format: ulx,uly,lrx,lry'
-        (output_format, data) = dataApp.get_data(model, format, datetime, projwin)
+        (output_format, data) = dataApp.get_data(model, fmt, dt, projwin)
     else:
-        product, format, datetime = seg2, seg3, seg4
-        (output_format, data) = dataApp.get_data(model, format, datetime, None, product)
+        product, fmt, dt = seg2, seg3, seg4
+        (output_format, data) = dataApp.get_data(model, fmt, dt, None, product)
     response.content_type = output_format
     return data
 

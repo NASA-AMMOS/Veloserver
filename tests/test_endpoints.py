@@ -47,7 +47,7 @@ def run(r):
     print(f"# time={T}  projwin={PROJWIN}  base set in helpers.BASE")
 
     r.section("Static routes")
-    status, body, err = fetch("/")
+    status, body, _ = fetch("/")
     r.check("GET /", status == 200 and len(body) > 0, f"HTTP {status} bytes={len(body)}")
 
     r.section("HRRR velocity product (gribjson = U/V vectors)")

@@ -9,13 +9,17 @@ import os
 import re
 import math
 import json
+import tempfile
 import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
 BASE = os.environ.get("VELOSERVER_URL", "http://localhost:8104")
-OUT = os.environ.get("VELOSERVER_TEST_OUT", "/tmp/velotest")
+# Default to a private, 0700 temp dir with an unpredictable name rather than a
+# hardcoded publicly-writable path like /tmp/velotest (Sonar S5443). Operators
+# can still pin a specific directory via VELOSERVER_TEST_OUT.
+OUT = os.environ.get("VELOSERVER_TEST_OUT") or tempfile.mkdtemp(prefix="velotest-")
 PROJWIN = "-105,41,-104,40"  # small Colorado box: ulx,uly,lrx,lry
 
 HRRR_PRODUCTS = ["winds", "temp_2m", "pbl_height", "smoke_massden",
@@ -90,6 +94,47 @@ def validate_png(body):
     return True, f"png bytes={len(body)}"
 
 
+_NODATA = 9999.0
+
+
+def _uvspeed_at_pixel(p, x, y):
+    """Sample one pixel. Returns 'skip' (no/nodata value), 'ok' (relation holds),
+    or an error string when band3 != sqrt(u^2 + v^2)."""
+    res = subprocess.run(["gdallocationinfo", "-valonly", p, str(x), str(y)],
+                         capture_output=True, text=True)
+    vals = res.stdout.split()
+    if len(vals) != 3:
+        return "skip"
+    try:
+        u, v, speed = (float(val) for val in vals)
+    except ValueError:
+        return "skip"
+    if _NODATA in (u, v, speed):
+        return "skip"
+    expected = math.hypot(u, v)
+    if abs(speed - expected) > 0.05 + 1e-3 * expected:
+        return (f"band3 != sqrt(u^2+v^2) at pixel ({x},{y}): "
+                f"u={u:.3f} v={v:.3f} speed={speed:.3f} expected={expected:.3f}")
+    return "ok"
+
+
+def _verify_winds_pixels(p, w, h):
+    """Sample a grid of interior pixels and confirm band3 == hypot(u, v)."""
+    checked = 0
+    for fx in (0.25, 0.4, 0.5, 0.6, 0.75):
+        for fy in (0.3, 0.5, 0.7):
+            result = _uvspeed_at_pixel(p, int(w * fx), int(h * fy))
+            if result == "skip":
+                continue
+            if result != "ok":
+                return False, result
+            checked += 1
+    if checked == 0:
+        return False, "no valid (non-nodata) pixels found to verify u/v/speed"
+    return True, (f"bands [u, v, speed]; speed==hypot(u,v) verified at "
+                  f"{checked} pixels")
+
+
 def validate_cog_winds(body):
     """The winds COG must be a 3-band raster with band1=u, band2=v, band3=speed,
     where speed == sqrt(u^2 + v^2). Verified by sampling interior pixels."""
@@ -116,33 +161,7 @@ def validate_cog_winds(body):
         return False, "could not parse raster size"
     w, h = int(m.group(1)), int(m.group(2))
 
-    NODATA = 9999.0
-    checked = 0
-    for fx in (0.25, 0.4, 0.5, 0.6, 0.75):
-        for fy in (0.3, 0.5, 0.7):
-            x, y = int(w * fx), int(h * fy)
-            res = subprocess.run(["gdallocationinfo", "-valonly", p, str(x), str(y)],
-                                 capture_output=True, text=True)
-            vals = res.stdout.split()
-            if len(vals) != 3:
-                continue
-            try:
-                u, v, speed = (float(val) for val in vals)
-            except ValueError:
-                continue
-            if NODATA in (u, v, speed):
-                continue
-            expected = math.hypot(u, v)
-            if abs(speed - expected) > 0.05 + 1e-3 * expected:
-                return False, (f"band3 != sqrt(u^2+v^2) at pixel ({x},{y}): "
-                               f"u={u:.3f} v={v:.3f} speed={speed:.3f} "
-                               f"expected={expected:.3f}")
-            checked += 1
-
-    if checked == 0:
-        return False, "no valid (non-nodata) pixels found to verify u/v/speed"
-    return True, (f"bands [u, v, speed]; speed==hypot(u,v) verified at "
-                  f"{checked} pixels")
+    return _verify_winds_pixels(p, w, h)
 
 
 def validate_cog_scalar(body, product):

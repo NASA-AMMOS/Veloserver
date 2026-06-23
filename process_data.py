@@ -16,6 +16,15 @@ from datetime import datetime
 from herbie import Herbie
 from ecmwfapi import ECMWFDataServer
 
+# File extensions reused when deriving cache/output filenames. Centralized so the
+# literals aren't duplicated across the processing functions (Sonar S1192).
+EXT_GRIB = '.grib'
+EXT_GRIB2 = '.grib2'
+EXT_JSON = '.json'
+
+# Whole-globe bounds; a projwin equal to this means "no spatial subset".
+GLOBAL_PROJWIN = [-180, 90, 180, -90]
+
 
 def _safe_path(base_dir, filename):
     """Join filename under base_dir and refuse anything that escapes it.
@@ -296,6 +305,71 @@ def lon360(lon):
     return (lon + 360) % 360 if lon < 0 else lon
 
 
+def _regrid_hrrr(product, date, hour, output_dir):
+    """Download native HRRR and regrid it to a latlon GRIB2; return its path."""
+    regrid_file = _safe_path(output_dir, f'hrrr-{product}-{date}T{hour}{EXT_GRIB2}')
+    if os.path.exists(regrid_file):
+        return regrid_file
+
+    H = Herbie(date + ' ' + hour, model="hrrr", fxx=0, save_dir=output_dir)
+    download_file = str(H.download(HRRR_PRODUCTS[product]['search'], verbose=True))
+    print('Downloaded', download_file)
+
+    wgrib2_commands = ['wgrib2', download_file,
+                       '-new_grid', 'latlon',
+                       '-134:730:0.1', '21:310:0.1',
+                       regrid_file]
+    if product == 'winds':
+        wgrib2_commands.insert(2, 'earth')
+        wgrib2_commands.insert(2, '-new_grid_winds')
+    print(' '.join(wgrib2_commands))
+    subprocess.run(wgrib2_commands)
+    return regrid_file
+
+
+def _subset_hrrr(product, projwin, date, hour, output_dir, regrid_file):
+    """Subset the regridded GRIB2 to projwin; return the GRIB to convert (the
+    subset, or the full regrid when no projwin was given)."""
+    if projwin == GLOBAL_PROJWIN:
+        return regrid_file
+    projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
+    subset_file = _safe_path(output_dir, f'hrrr-{product}-{projwin_string}-{date}T{hour}{EXT_GRIB2}')
+    if not os.path.exists(subset_file):
+        wgrib2_commands = ['wgrib2', regrid_file,
+                           '-small_grib',
+                           str(projwin[0]) + ':' + str(projwin[2]),
+                           str(projwin[3]) + ':' + str(projwin[1]),
+                           subset_file]
+        print(' '.join(wgrib2_commands))
+        subprocess.run(wgrib2_commands)
+    return subset_file
+
+
+def _convert_hrrr(output_grib, format, product):
+    """Convert the GRIB to the requested format; return the file path, or an
+    error string for an unsupported format."""
+    if format == 'gribjson':
+        output_file = output_grib.replace(EXT_GRIB2, EXT_JSON)
+        if not os.path.exists(output_file):
+            with open(output_file, 'w') as f:
+                subprocess.run(['grib2json', '--names', '--data', '--fv', '10.0', output_grib],
+                               stdout=f, text=True)
+                print('Created', output_file)
+    elif format == 'geotiff':
+        output_file = output_grib.replace(EXT_GRIB2, '.tif')
+        if not os.path.exists(output_file):
+            subprocess.run(['gdalwarp', '-of', 'GTiff', '-t_srs', 'EPSG:3857', output_grib, output_file])
+            print('Created', output_file)
+    elif format == 'png':
+        output_file = output_grib.replace(EXT_GRIB2, '.png')
+        if not os.path.exists(output_file):
+            _create_png(output_grib, output_file, product)
+            print('Created', output_file)
+    else:
+        return f'Unsupported format: {format}'
+    return output_file
+
+
 def process_hrrr(product, projwin, date, time, output_dir, format):
     if product not in HRRR_PRODUCTS:
         return f'Unknown product: {product}. Available: {list(HRRR_PRODUCTS.keys())}'
@@ -308,71 +382,14 @@ def process_hrrr(product, projwin, date, time, output_dir, format):
 
     print(f'Processing HRRR {product}')
     if projwin is None:
-        projwin = [-180, 90, 180, -90]
+        projwin = GLOBAL_PROJWIN
 
     hour = datetime.strptime(time, '%H:%M:%S').strftime('%H:00:00')
     date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
-    search = HRRR_PRODUCTS[product]['search']
 
-    # Regrid to latlon
-    regrid_file = _safe_path(output_dir, f'hrrr-{product}-{date}T{hour}.grib2')
-    if not os.path.exists(regrid_file):
-        H = Herbie(
-            date + ' ' + hour,
-            model="hrrr",
-            fxx=0,
-            save_dir=output_dir
-        )
-        download_file = str(H.download(search, verbose=True))
-        print('Downloaded', download_file)
-    if not os.path.exists(regrid_file):
-        wgrib2_commands = ['wgrib2', download_file,
-                           '-new_grid', 'latlon',
-                           '-134:730:0.1', '21:310:0.1',
-                           regrid_file]
-        if product == 'winds':
-            wgrib2_commands.insert(2, 'earth')
-            wgrib2_commands.insert(2, '-new_grid_winds')
-        print(' '.join(wgrib2_commands))
-        subprocess.run(wgrib2_commands)
-
-    # Subset if projwin provided
-    output_grib = regrid_file
-    if projwin != [-180, 90, 180, -90]:
-        projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
-        subset_file = _safe_path(output_dir, f'hrrr-{product}-{projwin_string}-{date}T{hour}.grib2')
-        if not os.path.exists(subset_file):
-            wgrib2_commands = ['wgrib2', regrid_file,
-                               '-small_grib',
-                               str(projwin[0]) + ':' + str(projwin[2]),
-                               str(projwin[3]) + ':' + str(projwin[1]),
-                               subset_file]
-            print(' '.join(wgrib2_commands))
-            subprocess.run(wgrib2_commands)
-        output_grib = subset_file
-
-    # Convert to requested format
-    if format == 'gribjson':
-        output_file = output_grib.replace('.grib2', '.json')
-        if not os.path.exists(output_file):
-            with open(output_file, 'w') as f:
-                subprocess.run(['grib2json', '--names', '--data', '--fv', '10.0', output_grib],
-                               stdout=f, text=True)
-                print('Created', output_file)
-    elif format == 'geotiff':
-        output_file = output_grib.replace('.grib2', '.tif')
-        if not os.path.exists(output_file):
-            subprocess.run(['gdalwarp', '-of', 'GTiff', '-t_srs', 'EPSG:3857', output_grib, output_file])
-            print('Created', output_file)
-    elif format == 'png':
-        output_file = output_grib.replace('.grib2', '.png')
-        if not os.path.exists(output_file):
-            _create_png(output_grib, output_file, product)
-            print('Created', output_file)
-    else:
-        return f'Unsupported format: {format}'
-
-    return output_file
+    regrid_file = _regrid_hrrr(product, date, hour, output_dir)
+    output_grib = _subset_hrrr(product, projwin, date, hour, output_dir, regrid_file)
+    return _convert_hrrr(output_grib, format, product)
 
 def process_ecmwf(projwin, date, output_dir):
     print('Processing ECMWF data')
@@ -382,8 +399,7 @@ def process_ecmwf(projwin, date, output_dir):
     date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
 
     # Get GRIB from ECMWFDataServer
-    download_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + '.grib')
-    output_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + '.json')
+    download_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + EXT_GRIB)
     if not os.path.isfile(download_file):
         server = ECMWFDataServer()
         server.retrieve({
@@ -408,7 +424,7 @@ def process_ecmwf(projwin, date, output_dir):
     if projwin is not None:
         projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
         subset_file = _safe_path(output_dir,
-                                 'ecmwf-uv-' + projwin_string + '-' + date + 'T' + hour + '.grib')
+                                 'ecmwf-uv-' + projwin_string + '-' + date + 'T' + hour + EXT_GRIB)
         if not os.path.exists(subset_file):
             wgrib2_commands = ['wgrib2',
                                download_file,
@@ -423,7 +439,7 @@ def process_ecmwf(projwin, date, output_dir):
         print('Subset file', subset_file)
 
     # Convert GRIB to JSON
-    output_file = download_file.replace('.grib', '.json')
+    output_file = download_file.replace(EXT_GRIB, EXT_JSON)
     if not os.path.exists(output_file):
         grib2json_commands = ['grib2json',
                               '--names',
@@ -451,8 +467,8 @@ def process_gfs(projwin, date, time, output_dir):
     hour = time_obj.replace(hour=rounded_hour).strftime('%H:00:00')
 
     # Download subsetted GFS GRIB file (date already validated by strptime above)
-    download_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + '.grib')
-    output_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + '.json')
+    download_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + EXT_GRIB)
+    output_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + EXT_JSON)
     print('Checking for existing', download_file)
     if not os.path.isfile(download_file):
         url_base = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'
