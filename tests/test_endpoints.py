@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from helpers import (  # noqa: E402
+from helpers import ( 
     Results, fetch, recent_time, PROJWIN, HRRR_PRODUCTS, HRRR_FORMATS,
     validate_gribjson, validate_tiff, validate_png, validate_nonempty,
     validate_cog_winds, validate_cog_scalar,
@@ -86,10 +86,11 @@ def run(r):
 
 
 if __name__ == "__main__":
-    from helpers import Results, server_up
+    from helpers import Results, server_up, clear_cache
     if not server_up():
         print("Server not reachable at helpers.BASE — start it (docker compose up -d).")
         sys.exit(2)
+    clear_cache()
     r = Results()
     run(r)
     sys.exit(0 if r.summary() else 1)

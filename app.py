@@ -1,5 +1,6 @@
 import os
 import math
+import manage_cache
 import config
 import shutil
 from bottle import response as bottle_response
@@ -46,18 +47,25 @@ class App():
         datetime_object = datetime.fromisoformat(iso_string)
 
         if model == 'hrrr':
-            return self._serve_hrrr(product, projwin, datetime_object, format)
-        if model == 'ecmwf':
-            return self._serve_json(process_ecmwf(
+            result = self._serve_hrrr(product, projwin, datetime_object, format)
+        elif model == 'ecmwf':
+            result = self._serve_json(process_ecmwf(
                 projwin,
                 datetime_object.strftime("%Y-%m-%d"),
                 config.APP_CONFIG["CACHE_DIR"]))
-        # Last case would be gfs here.
-        return self._serve_json(process_gfs(
-            projwin,
-            datetime_object.strftime("%Y-%m-%d"),
-            datetime_object.strftime("%H:%M:%S"),
-            config.APP_CONFIG["CACHE_DIR"]))
+        else:
+            # Last case would be gfs here.
+            result = self._serve_json(process_gfs(
+                projwin,
+                datetime_object.strftime("%Y-%m-%d"),
+                datetime_object.strftime("%H:%M:%S"),
+                config.APP_CONFIG["CACHE_DIR"]))
+
+        # Keep the cache under its byte budget. Runs after the response is read
+        # into memory (and the served file's mtime is freshened), so the file we
+        # just returned is the most-recently-used and never the first evicted.
+        manage_cache.enforce_configured(config.APP_CONFIG)
+        return result
 
     @staticmethod
     def _validate_request(model, format, projwin, product):
@@ -106,5 +114,8 @@ class App():
         # file open can't be steered outside the cache. _safe_path is the
         # project's path sanitizer (path-injection hardening, Sonar S2083).
         output = _safe_path(config.APP_CONFIG["CACHE_DIR"], os.path.basename(output))
+        # Mark as recently used so LRU eviction keeps recently-used files (manage_cache.py keys on
+        # mtime); do this before the read so it counts even on a cache hit.
+        manage_cache.mark_used(output)
         with open(output, mode) as f:
             return (config.APP_CONFIG["AVAILABLE_FORMATS"][ct_key], f.read())

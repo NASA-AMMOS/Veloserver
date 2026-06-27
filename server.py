@@ -3,24 +3,19 @@ import re
 from datetime import datetime
 from bottle import Bottle, run, request, response, static_file, abort
 from app import App
-from process_data import _ensure_3857_geotiff, HRRR_PRODUCTS, _safe_path
+from process_data import _ensure_3857_geotiff, HRRR_PRODUCTS, _safe_path, _cog_filename
+import manage_cache
 import config
 
 bottle_app = Bottle()
 dataApp = App()
 
 # Allowlist of the characters our routes actually use (word chars plus the
-# separators in dates, bboxes and products). PATH_INFO is request-controlled, so
-# it is validated against this before being normalized for routing (S2083).
+# separators in dates, bboxes and products).
 _ALLOWED_PATH_INFO = re.compile(r'\A[\w./:,+-]*\Z')
 
 
 def _serve_cog(product, time_param):
-    # product is interpolated into the COG file path, so restrict it to the known
-    # set before any I/O (path-injection hardening, Sonar S2083). Error responses
-    # must not echo raw request input back to the client (reflected XSS, S5131):
-    # report the allowlisted product names instead of the bad value, and never
-    # reflect the raw time_param or exception text.
     if product not in HRRR_PRODUCTS:
         response.status = 400
         return 'Unknown product. Valid products: ' + ', '.join(sorted(HRRR_PRODUCTS))
@@ -37,11 +32,15 @@ def _serve_cog(product, time_param):
     hour_safe = hour.replace(':', '')
     print(f'[COG] parsed → date={date!r}, hour={hour!r}, hour_safe={hour_safe!r}')
     cache_dir = config.APP_CONFIG['CACHE_DIR']
-    cog_path = _safe_path(cache_dir, f'hrrr-{product}-{date}T{hour_safe}-3857-cog.tif')
+    cog_path = _safe_path(cache_dir, _cog_filename(product, date, hour))
 
     try:
         if not os.path.exists(cog_path):
             cog_path = _ensure_3857_geotiff(product, date, hour, cache_dir)
+        # Freshen mtime then evict *before* streaming, so the COG we are about to
+        # serve is the most-recently-used file and cannot be deleted mid-stream.
+        manage_cache.mark_used(cog_path)
+        manage_cache.enforce_configured(config.APP_CONFIG)
         return static_file(os.path.basename(cog_path), root=cache_dir, mimetype='image/tiff')
     except (FileNotFoundError, ValueError):
         response.status = 404
@@ -77,7 +76,7 @@ def enable_cors(fn):
 def strip_path():
     path = request.environ['PATH_INFO']
     # Reject anything outside the allowlist or containing traversal before the
-    # (validated) value is written back for routing (path-injection guard, S2083).
+    # validated value is written back for routing (path-injection guard, S2083).
     if '..' in path or not _ALLOWED_PATH_INFO.match(path):
         abort(400, 'Invalid request path')
     request.environ['PATH_INFO'] = path.rstrip('/')
@@ -120,30 +119,9 @@ def get_data(model, format, datetime):
 @bottle_app.route('/<model>/<seg2>/<seg3>/<seg4>')
 @enable_cors
 def get_data_four_segment(model, seg2, seg3, seg4):
-    """
-    The router matches a URL by counting the slash-separated parts and filling
-    each named slot left-to-right. Adding the product route gave the older projwin route a same-length twin.
-    With both routes registered, two different 4-part shapes existed:
-
-        /<model>/<format>/<datetime>/<projwin>   (bbox, no product)
-        /<model>/<product>/<format>/<datetime>   (product, no bbox)
-
-    Bottle has no way to know which one a 4-part URL means, and it matched the
-    product shape for both. So a bbox request:
-
-        GET /gfs/gribjson/2024-03-05T00:00:00/-105,41,-104,40
-
-    was read as product=gribjson, format=2024-03-05T00:00:00,
-    datetime=-105,41,-104,40 -- the bbox landed in the <datetime> slot and 500'd
-    when app.py called datetime.fromisoformat() on it. This hit every no-product
-    bbox request (GFS/ECMWF always, since they have no product; and the bare
-    HRRR /<model>/<format>/<datetime>/<projwin> form). The 5-part product+bbox
-    route below was never ambiguous and stayed separate.
-
-    Folding both 4-part shapes into this one handler removes the guess: a bbox is
-    the only part that ever contains commas, so the comma in the final segment
-    decides which shape it is.
-    """
+    """Two different 4-part URLs land here. A bbox shape (model/format/datetime/projwin)
+    and a product shape (model/product/format/datetime) look the same to the router, so
+    we tell them apart by content, since only a bbox ever has a comma."""
     if ',' in seg4:
         fmt, dt, projwin = seg2, seg3, seg4.split(',')
         if len(projwin) != 4:
@@ -170,6 +148,19 @@ def get_data_product_projwin(model, product, format, datetime, projwin):
     return data
 
 
+# Run several worker processes, each with a few threads. A fresh request ties up
+# its slot for a few seconds, mostly waiting on a download or a wgrib2/gdal
+# subprocess. Workers give us cores and crash isolation, so a native crash kills
+# one worker that gunicorn restarts rather than the whole server. Threads let a
+# worker keep serving other requests during those waits and share memory across
+# them. The PNG rendering was moved off matplotlib's global state so it is safe to
+# run on several threads at once. Set VELOSERVER_THREADS=1 to go back to pure
+# workers. gunicorn switches to its threaded worker automatically when threads > 1.
+_WORKERS = int(os.environ.get('VELOSERVER_WORKERS', 4))
+_THREADS = int(os.environ.get('VELOSERVER_THREADS', 4))
+_TIMEOUT = int(os.environ.get('VELOSERVER_TIMEOUT', 60))
+
+
 def main():
     # production
     if (os.path.exists('/certs/key.pem') and os.path.exists('/certs/cert.pem')):
@@ -177,7 +168,9 @@ def main():
             host='0.0.0.0',
             port=8104,
             server='gunicorn',
-            timeout=60,
+            workers=_WORKERS,
+            threads=_THREADS,
+            timeout=_TIMEOUT,
             keyfile='/certs/key.pem',
             certfile='/certs/cert.pem')
     else:
@@ -186,8 +179,9 @@ def main():
             host='0.0.0.0',
             port=8104,
             server='gunicorn',
-            workers=4,
-            timeout=60,
+            workers=_WORKERS,
+            threads=_THREADS,
+            timeout=_TIMEOUT,
             debug=True,
             reloader=True)
 

@@ -9,6 +9,7 @@ import os
 import re
 import math
 import json
+import shutil
 import tempfile
 import subprocess
 import urllib.request
@@ -41,6 +42,40 @@ def server_up():
         return True
     except Exception:
         return False
+
+
+# Path to the server's cache dir as seen from where the tests run (inside the
+# container that is /home/veloserver/cache; from the host it's the mounted path).
+# STRESS_CACHE_DIR is accepted as an alias so the existing stress env still works.
+CACHE_DIR = os.environ.get("VELOSERVER_CACHE_DIR") or os.environ.get("STRESS_CACHE_DIR")
+
+
+def clear_cache():
+    """Delete the *contents* of the server's cache dir so the run starts from an
+    empty cache.
+
+    This is the point of the suite -- eviction and cache-hit timing only mean
+    something from a known-empty cache. Removes entries but never the dir itself,
+    so the running server keeps writing into it. No-op with a warning when
+    CACHE_DIR is unset/missing, so the suite still runs against a remote server
+    (just not from an empty cache). Destructive by design: only ever point
+    CACHE_DIR at a disposable test cache, never a production one."""
+    if not CACHE_DIR or not os.path.isdir(CACHE_DIR):
+        print(f"[cache] NOT cleared (VELOSERVER_CACHE_DIR={CACHE_DIR!r}); cache left as-is")
+        return 0
+    removed = 0
+    for name in os.listdir(CACHE_DIR):
+        p = os.path.join(CACHE_DIR, name)
+        try:
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.remove(p)
+            removed += 1
+        except OSError:
+            pass
+    print(f"[cache] cleared {removed} entries from {CACHE_DIR} -> starting empty")
+    return removed
 
 
 def fetch(path, timeout=240):

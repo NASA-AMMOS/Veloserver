@@ -5,12 +5,16 @@ import argparse
 import subprocess
 import threading
 import fcntl
+import contextlib
 import requests
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import matplotlib.cm
+import matplotlib.colors
 import matplotlib.ticker
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 import rasterio
 from datetime import datetime
 from herbie import Herbie
@@ -24,6 +28,12 @@ EXT_JSON = '.json'
 
 # Whole-globe bounds; a projwin equal to this means "no spatial subset".
 GLOBAL_PROJWIN = [-180, 90, 180, -90]
+
+# (connect, read) timeout for outbound HTTP downloads. The read value bounds the
+# gap between bytes, not the whole transfer, so a slow-but-progressing download
+# still completes while a wedged connection fails fast. Matters under threaded
+# workers, where gunicorn's worker timeout no longer reaps a single hung request.
+_HTTP_TIMEOUT = (10, 60)
 
 
 def _safe_path(base_dir, filename):
@@ -41,24 +51,75 @@ def _safe_path(base_dir, filename):
     return resolved
 
 
+@contextlib.contextmanager
+def _atomic_output(final_path):
+    """Write to a unique temp file, then atomically rename it into place.
+
+    wgrib2/gdal/grib2json write incrementally to their output path, so two
+    concurrent identical requests -- or a reader hitting the os.path.exists cache
+    check mid-write -- could otherwise see a half-written file. Renaming a
+    per-process temp into the final path makes the cached file appear only once
+    complete (os.replace is atomic on POSIX). Temp confined under the same dir
+    (path-injection hardening, Sonar S8707)."""
+    uid = f'{os.getpid()}-{threading.get_ident()}'
+    tmp = _safe_path(os.path.dirname(final_path),
+                     f'{os.path.basename(final_path)}.{uid}.tmp')
+    try:
+        yield tmp
+        if os.path.exists(tmp):
+            os.replace(tmp, final_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+@contextlib.contextmanager
+def _download_lock(cache_dir, key):
+    """Cross-process lock so concurrent identical requests don't fetch the same
+    source file at once (duplicate downloads / partial-file reads). An in-memory
+    threading.Lock would not span gunicorn worker processes, hence fcntl. The key
+    is built only from allowlisted/numeric/date tokens (S2083)."""
+    lock_file = open(_safe_path(cache_dir, f'{key}.lock'), 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
+
+
 
 HRRR_PRODUCT_COLORMAPS = {
-    'wind_speed':    {'cmap': 'viridis',   'label': 'Wind Speed (m/s)'},
-    'wind_u':        {'cmap': 'RdBu_r',   'label': 'Wind U Component (m/s)'},
-    'wind_v':        {'cmap': 'RdBu_r',   'label': 'Wind V Component (m/s)'},
-    'temp_2m':       {'cmap': 'RdYlBu_r', 'label': 'Temperature (K)'},
-    'pbl_height':    {'cmap': 'plasma',   'label': 'PBL Height (m)'},
-    'smoke_massden': {'cmap': 'YlOrRd',   'label': 'Smoke Mass Density (µg/m³)', 'scale': 1e9, 'vmin': 0, 'vmax': 250},
-    'precip_rate':   {'cmap': 'Blues',    'label': 'Precip Rate (kg/m²/s)'},
+    # Per-product colormaps, keyed by product name, used by the PNG renderer.
+    'winds':         {'cmap': 'viridis',   'label': 'Wind Speed (m/s)'},
+    'wind_gust':     {'cmap': 'viridis',   'label': 'Wind Gust (m/s)'},
+    'temp_2m':       {'cmap': 'RdYlBu_r',  'label': 'Temperature (K)'},
+    'dewpoint_2m':   {'cmap': 'RdYlBu_r',  'label': 'Dewpoint (K)'},
+    'rh_2m':         {'cmap': 'YlGnBu',    'label': 'Relative Humidity (%)'},
+    'pbl_height':    {'cmap': 'plasma',    'label': 'PBL Height (m)'},
+    'smoke_massden': {'cmap': 'YlOrRd',    'label': 'Smoke Mass Density (µg/m³)', 'scale': 1e9, 'vmin': 0, 'vmax': 250},
+    'precip_rate':   {'cmap': 'Blues',     'label': 'Precip Rate (kg/m²/s)'},
+}
+
+# Colormap for each band of the 3-band winds COG, keyed by the band name written
+# into the COG and read back by _generate_cog, so the band names and their colormaps
+# live in one place and can't drift. u and v are signed so they use a diverging map,
+# speed is magnitude so it uses a sequential one.
+WINDS_BAND_COLORMAPS = {
+    'u':     {'cmap': 'RdBu_r',  'label': 'Wind U Component (m/s)'},
+    'v':     {'cmap': 'RdBu_r',  'label': 'Wind V Component (m/s)'},
+    'speed': {'cmap': 'viridis', 'label': 'Wind Speed (m/s)'},
 }
 
 
 def _create_png(grib_file, output_file, product):
     cmap_info = HRRR_PRODUCT_COLORMAPS.get(product, {'cmap': 'viridis', 'label': product})
 
-    # Convert GRIB2 to GeoTIFF first (temp file confined to the output dir, S8707)
+    # Convert GRIB2 to GeoTIFF first (temp file confined to the output dir, S8707).
+    # The uid keeps concurrent renders of the same product from sharing one temp.
+    uid = f'{os.getpid()}-{threading.get_ident()}'
     tmp_tif = _safe_path(os.path.dirname(output_file),
-                         os.path.basename(output_file).replace('.png', '_tmp.tif'))
+                         f'{os.path.basename(output_file)}-{uid}_tmp.tif')
     subprocess.run(['gdal_translate', '-of', 'GTiff', grib_file, tmp_tif], check=True)
 
     with rasterio.open(tmp_tif) as src:
@@ -86,23 +147,44 @@ def _create_png(grib_file, output_file, product):
         data = np.where(data <= 0, np.nan, data)
         norm = matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax)
     else:
-        norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.get_cmap(cmap_info['cmap'])
+        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = matplotlib.colormaps[cmap_info['cmap']]
     rgba = cmap(norm(data))
     rgba[np.isnan(data)] = (0, 0, 0, 0)
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+
+    # Object-oriented matplotlib (Figure + an explicit Agg canvas) instead of the
+    # pyplot global state. pyplot keeps a process-wide figure registry and is not
+    # thread-safe, so two renders on two threads of one worker could clobber each
+    # other's figure; a standalone Figure has none of that shared state.
+    fig = Figure(figsize=(12, 6), dpi=150)
+    FigureCanvasAgg(fig)
+    ax = fig.subplots()
     ax.imshow(rgba, aspect='auto')
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm = matplotlib.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    cb = plt.colorbar(sm, ax=ax, label=cmap_info['label'], shrink=0.8)
+    cb = fig.colorbar(sm, ax=ax, label=cmap_info['label'], shrink=0.8)
     if cmap_info.get('log', False):
         cb.ax.yaxis.set_major_formatter(matplotlib.ticker.ScalarFormatter())
         cb.ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     ax.set_title(cmap_info['label'])
     ax.axis('off')
-    plt.tight_layout()
-    plt.savefig(output_file, dpi=150, bbox_inches='tight', transparent=False)
-    plt.close(fig)
+    fig.tight_layout()
+    # output_file is the atomic-write temp path ending in .tmp, so matplotlib can't
+    # infer the image type from the extension; state it explicitly.
+    fig.savefig(output_file, format='png', dpi=150, bbox_inches='tight', transparent=False)
+
+
+def _hrrr_cog_name_prefix(product, date, hour):
+    """Shared leading part of every HRRR COG cache filename (COG, lock, temps).
+    One source of truth so the cache-hit check and writer can't disagree.
+    ``hour`` colons are stripped here for filesystem portability."""
+    return f'hrrr-{product}-{date}T{hour.replace(":", "")}'
+
+
+def _cog_filename(product, date, hour):
+    """Canonical EPSG:3857 COG cache filename; shared by the writer and the
+    server's cache-hit check, which must agree byte-for-byte."""
+    return _hrrr_cog_name_prefix(product, date, hour) + '-3857-cog.tif'
 
 
 def _ensure_3857_geotiff(product, date, hour, cache_dir):
@@ -114,8 +196,8 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
         raise ValueError(f'Unknown product: {product}')
     product = next(p for p in HRRR_PRODUCTS if p == product)
     date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')  # validate/normalize
-    parsed_hour = hour.replace(':', '')
-    cog_file = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-cog.tif')
+    name_prefix = _hrrr_cog_name_prefix(product, date, hour)
+    cog_file = _safe_path(cache_dir, _cog_filename(product, date, hour))
     if os.path.exists(cog_file):
         return cog_file
 
@@ -123,7 +205,7 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
     # The in-memory threading.Lock only works within one gunicorn worker process.
     # With multiple workers, they race to download the same GRIB file causing
     # GDAL "not a supported file format" errors on partial reads.
-    lock_path = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}.lock')
+    lock_path = _safe_path(cache_dir, f'{name_prefix}.lock')
     lock_file = open(lock_path, 'w')
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -147,11 +229,11 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
             grib_file = str(H.download(search, verbose=False))
 
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_tif = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-tmp-{uid}.tif')
-        tmp_cog = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-cog-{uid}.tmp.tif')
+        tmp_tif = _safe_path(cache_dir, f'{name_prefix}-3857-tmp-{uid}.tif')
+        tmp_cog = _safe_path(cache_dir, f'{name_prefix}-3857-cog-{uid}.tmp.tif')
 
         try:
-            return _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir)
+            return _generate_cog(product, name_prefix, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir)
         except Exception:
             for f in [tmp_tif, tmp_cog]:
                 if os.path.exists(f):
@@ -161,7 +243,7 @@ def _ensure_3857_geotiff(product, date, hour, cache_dir):
         fcntl.flock(lock_file, fcntl.LOCK_UN)
         lock_file.close()
 
-def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir):
+def _generate_cog(product, name_prefix, grib_file, tmp_tif, tmp_cog, cog_file, cache_dir):
     # Bind product to its allowlist key before it's interpolated into the temp
     # file paths below, so the value can't come from raw request input (S2083).
     if product not in HRRR_PRODUCTS:
@@ -185,7 +267,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
 
     if product == 'winds':
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_uvs = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-uvs-{uid}.tif')
+        tmp_uvs = _safe_path(cache_dir, f'{name_prefix}-3857-uvs-{uid}.tif')
         with rasterio.open(tmp_tif) as src:
             u = src.read(1).astype(np.float32)
             v = src.read(2).astype(np.float32) if src.count >= 2 else np.zeros_like(u)
@@ -208,7 +290,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
         # HRRR near-surface smoke (MASSDEN) is native kg/m^3; convert to the
         # conventional µg/m^3 to make it interpretable with other pm 2.5 products.
         uid = f'{os.getpid()}-{threading.get_ident()}'
-        tmp_scaled = _safe_path(cache_dir, f'hrrr-{product}-{date}T{parsed_hour}-3857-scaled-{uid}.tif')
+        tmp_scaled = _safe_path(cache_dir, f'{name_prefix}-3857-scaled-{uid}.tif')
         with rasterio.open(tmp_tif) as src:
             band = src.read(1).astype(np.float32)
             nodata = src.nodata
@@ -224,7 +306,7 @@ def _generate_cog(product, date, parsed_hour, grib_file, tmp_tif, tmp_cog, cog_f
 
     # Label bands so the COG is self-describing for downstream consumers
     # (gdal_translate carries these descriptions through into the final COG).
-    band_names = ['u', 'v', 'speed'] if product == 'winds' else [product]
+    band_names = list(WINDS_BAND_COLORMAPS) if product == 'winds' else [product]
     with rasterio.open(tmp_tif, 'r+') as dst:
         for i, name in enumerate(band_names, start=1):
             if i <= dst.count:
@@ -311,19 +393,23 @@ def _regrid_hrrr(product, date, hour, output_dir):
     if os.path.exists(regrid_file):
         return regrid_file
 
-    H = Herbie(date + ' ' + hour, model="hrrr", fxx=0, save_dir=output_dir)
-    download_file = str(H.download(HRRR_PRODUCTS[product]['search'], verbose=True))
-    print('Downloaded', download_file)
+    with _download_lock(output_dir, f'hrrr-{product}-{date}T{hour}'):
+        if os.path.exists(regrid_file):  # built by another worker while we waited
+            return regrid_file
+        H = Herbie(date + ' ' + hour, model="hrrr", fxx=0, save_dir=output_dir)
+        download_file = str(H.download(HRRR_PRODUCTS[product]['search'], verbose=True))
+        print('Downloaded', download_file)
 
-    wgrib2_commands = ['wgrib2', download_file,
-                       '-new_grid', 'latlon',
-                       '-134:730:0.1', '21:310:0.1',
-                       regrid_file]
-    if product == 'winds':
-        wgrib2_commands.insert(2, 'earth')
-        wgrib2_commands.insert(2, '-new_grid_winds')
-    print(' '.join(wgrib2_commands))
-    subprocess.run(wgrib2_commands)
+        with _atomic_output(regrid_file) as tmp:
+            wgrib2_commands = ['wgrib2', download_file,
+                               '-new_grid', 'latlon',
+                               '-134:730:0.1', '21:310:0.1',
+                               tmp]
+            if product == 'winds':
+                wgrib2_commands.insert(2, 'earth')
+                wgrib2_commands.insert(2, '-new_grid_winds')
+            print(' '.join(wgrib2_commands))
+            subprocess.run(wgrib2_commands)
     return regrid_file
 
 
@@ -335,13 +421,14 @@ def _subset_hrrr(product, projwin, date, hour, output_dir, regrid_file):
     projwin_string = '_'.join(str(float(v)) for v in projwin)  # numeric only, no path chars (S2083)
     subset_file = _safe_path(output_dir, f'hrrr-{product}-{projwin_string}-{date}T{hour}{EXT_GRIB2}')
     if not os.path.exists(subset_file):
-        wgrib2_commands = ['wgrib2', regrid_file,
-                           '-small_grib',
-                           str(projwin[0]) + ':' + str(projwin[2]),
-                           str(projwin[3]) + ':' + str(projwin[1]),
-                           subset_file]
-        print(' '.join(wgrib2_commands))
-        subprocess.run(wgrib2_commands)
+        with _atomic_output(subset_file) as tmp:
+            wgrib2_commands = ['wgrib2', regrid_file,
+                               '-small_grib',
+                               str(projwin[0]) + ':' + str(projwin[2]),
+                               str(projwin[3]) + ':' + str(projwin[1]),
+                               tmp]
+            print(' '.join(wgrib2_commands))
+            subprocess.run(wgrib2_commands)
     return subset_file
 
 
@@ -351,19 +438,22 @@ def _convert_hrrr(output_grib, format, product):
     if format == 'gribjson':
         output_file = output_grib.replace(EXT_GRIB2, EXT_JSON)
         if not os.path.exists(output_file):
-            with open(output_file, 'w') as f:
-                subprocess.run(['grib2json', '--names', '--data', '--fv', '10.0', output_grib],
-                               stdout=f, text=True)
-                print('Created', output_file)
+            with _atomic_output(output_file) as tmp:
+                with open(tmp, 'w') as f:
+                    subprocess.run(['grib2json', '--names', '--data', '--fv', '10.0', output_grib],
+                                   stdout=f, text=True)
+            print('Created', output_file)
     elif format == 'geotiff':
         output_file = output_grib.replace(EXT_GRIB2, '.tif')
         if not os.path.exists(output_file):
-            subprocess.run(['gdalwarp', '-of', 'GTiff', '-t_srs', 'EPSG:3857', output_grib, output_file])
+            with _atomic_output(output_file) as tmp:
+                subprocess.run(['gdalwarp', '-of', 'GTiff', '-t_srs', 'EPSG:3857', output_grib, tmp])
             print('Created', output_file)
     elif format == 'png':
         output_file = output_grib.replace(EXT_GRIB2, '.png')
         if not os.path.exists(output_file):
-            _create_png(output_grib, output_file, product)
+            with _atomic_output(output_file) as tmp:
+                _create_png(output_grib, tmp, product)
             print('Created', output_file)
     else:
         return f'Unsupported format: {format}'
@@ -400,25 +490,27 @@ def process_ecmwf(projwin, date, output_dir):
 
     # Get GRIB from ECMWFDataServer
     download_file = _safe_path(output_dir, 'ecmwf-uv-' + date + 'T' + hour + EXT_GRIB)
-    if not os.path.isfile(download_file):
-        server = ECMWFDataServer()
-        server.retrieve({
-            "class": "s2",
-            "dataset": "s2s",
-            "date": date + "/to/" + date,
-            "expver": "prod",
-            "levtype": "sfc",
-            "model": "glob",
-            "origin": "ecmf",
-            "param": "165/166",
-            "step": "0",
-            "stream": "enfo",
-            "time": hour,
-            "type": "cf",
-            "grid": "0.1/0.1",
-            "target": download_file
-        })
-        print('Downloaded', download_file)
+    with _download_lock(output_dir, 'ecmwf-uv-' + date + 'T' + hour):
+        if not os.path.isfile(download_file):  # re-check inside the lock
+            server = ECMWFDataServer()
+            with _atomic_output(download_file) as tmp:
+                server.retrieve({
+                    "class": "s2",
+                    "dataset": "s2s",
+                    "date": date + "/to/" + date,
+                    "expver": "prod",
+                    "levtype": "sfc",
+                    "model": "glob",
+                    "origin": "ecmf",
+                    "param": "165/166",
+                    "step": "0",
+                    "stream": "enfo",
+                    "time": hour,
+                    "type": "cf",
+                    "grid": "0.1/0.1",
+                    "target": tmp
+                })
+            print('Downloaded', download_file)
 
     # Subset GRIB file
     if projwin is not None:
@@ -426,15 +518,16 @@ def process_ecmwf(projwin, date, output_dir):
         subset_file = _safe_path(output_dir,
                                  'ecmwf-uv-' + projwin_string + '-' + date + 'T' + hour + EXT_GRIB)
         if not os.path.exists(subset_file):
-            wgrib2_commands = ['wgrib2',
-                               download_file,
-                               '-small_grib',
-                               str(lon360(projwin[0])) +
-                               ':' + str(lon360(projwin[2])),
-                               str(projwin[3]) + ':' + str(projwin[1]),
-                               subset_file]
-            print(' '.join(wgrib2_commands))
-            subprocess.run(wgrib2_commands)
+            with _atomic_output(subset_file) as tmp:
+                wgrib2_commands = ['wgrib2',
+                                   download_file,
+                                   '-small_grib',
+                                   str(lon360(projwin[0])) +
+                                   ':' + str(lon360(projwin[2])),
+                                   str(projwin[3]) + ':' + str(projwin[1]),
+                                   tmp]
+                print(' '.join(wgrib2_commands))
+                subprocess.run(wgrib2_commands)
         download_file = subset_file
         print('Subset file', subset_file)
 
@@ -446,10 +539,11 @@ def process_ecmwf(projwin, date, output_dir):
                               '--data',
                               '--fv', '10.0',
                               download_file]
-        with open(output_file, 'w') as f:
-            print(' '.join(grib2json_commands))
-            subprocess.run(grib2json_commands, stdout=f, text=True, timeout=60)
-            print('Created', output_file)
+        with _atomic_output(output_file) as tmp:
+            with open(tmp, 'w') as f:
+                print(' '.join(grib2json_commands))
+                subprocess.run(grib2json_commands, stdout=f, text=True, timeout=60)
+        print('Created', output_file)
 
     return output_file
 
@@ -470,27 +564,29 @@ def process_gfs(projwin, date, time, output_dir):
     download_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + EXT_GRIB)
     output_file = _safe_path(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour + EXT_JSON)
     print('Checking for existing', download_file)
-    if not os.path.isfile(download_file):
-        url_base = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'
-        url_middle = 'dir=%2Fgfs.' + time_obj.strftime('%Y%m%d') + '%2F' + \
-                     f'{rounded_hour:02d}' + '%2Fatmos&file=gfs.t' + \
-                     f'{rounded_hour:02d}' + 'z.pgrb2.0p25.f000'
-        url_end = '&var_TMP=on&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on'
-        if projwin is not None:
-            subregion = '&subregion=&toplat=' + str(projwin[1]) + \
-                        '&leftlon=' + str(lon360(projwin[0])) + \
-                        '&rightlon=' + str(lon360(projwin[2])) + \
-                        '&bottomlat=' + str(projwin[3])
-            url_end = url_end + subregion
-        url = url_base + url_middle + url_end
-        print('Downloading', url)
-        response = requests.get(url)
-        if response.status_code == 200:
-            with open(download_file, 'wb') as f:
-                f.write(response.content)
-            print('Downloaded', download_file)
-        else:
-            return f'Error retrieving data: {url} - {response.status_code}'
+    with _download_lock(output_dir, 'gfs-' + projwin_string + '-' + date + 'T' + hour):
+        if not os.path.isfile(download_file):  # re-check inside the lock
+            url_base = 'https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?'
+            url_middle = 'dir=%2Fgfs.' + time_obj.strftime('%Y%m%d') + '%2F' + \
+                         f'{rounded_hour:02d}' + '%2Fatmos&file=gfs.t' + \
+                         f'{rounded_hour:02d}' + 'z.pgrb2.0p25.f000'
+            url_end = '&var_TMP=on&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on'
+            if projwin is not None:
+                subregion = '&subregion=&toplat=' + str(projwin[1]) + \
+                            '&leftlon=' + str(lon360(projwin[0])) + \
+                            '&rightlon=' + str(lon360(projwin[2])) + \
+                            '&bottomlat=' + str(projwin[3])
+                url_end = url_end + subregion
+            url = url_base + url_middle + url_end
+            print('Downloading', url)
+            response = requests.get(url, timeout=_HTTP_TIMEOUT)
+            if response.status_code == 200:
+                with _atomic_output(download_file) as tmp:
+                    with open(tmp, 'wb') as f:
+                        f.write(response.content)
+                print('Downloaded', download_file)
+            else:
+                return f'Error retrieving data: {url} - {response.status_code}'
 
     # Convert GRIB to JSON
     print('Checking for existing', output_file)
@@ -500,10 +596,11 @@ def process_gfs(projwin, date, time, output_dir):
                               '--data',
                               '--fv', '10.0',
                               download_file]
-        with open(output_file, 'wb') as f:
-            print(' '.join(grib2json_commands))
-            subprocess.run(grib2json_commands, stdout=f, text=True)
-            print('Created', output_file)
+        with _atomic_output(output_file) as tmp:
+            with open(tmp, 'wb') as f:
+                print(' '.join(grib2json_commands))
+                subprocess.run(grib2json_commands, stdout=f, text=True)
+        print('Created', output_file)
 
     return output_file
 
