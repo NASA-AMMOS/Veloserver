@@ -22,7 +22,7 @@ BUDGET="${CACHE_MAX_BYTES:-1073741824}"  # 1GB; realistic — bigger than the wo
 SUITE="${1:-tests/run_all.py}"
 
 cleanup() {
-  if [ "${KEEP:-0}" = "1" ]; then
+  if [[ "${KEEP:-0}" == "1" ]]; then
     echo "==> KEEP=1: leaving container '$NAME' running (remove with: docker rm -f $NAME)"
   else
     echo "==> cleaning up container + cache volume"

@@ -37,7 +37,7 @@ def test_evicts_oldest_first(r):
     with tempfile.TemporaryDirectory() as d:
         for i in range(5):  # f0 oldest .. f4 newest, 100 bytes each (total 500)
             _mkfile(os.path.join(d, f'f{i}'), 100, 1000 + i)
-        deleted = manage_cache.enforce_budget(d, max_bytes=300, target_ratio=0.85)  # target=255
+        deleted = manage_cache.enforce_budget(d, max_bytes=300, target_ratio=0.85)
         survived = [i for i in range(5) if _exists(d, f'f{i}')]
         r.check('evicts oldest-first down to target', deleted == 3 and survived == [3, 4],
                 f'deleted={deleted} survived={survived}')

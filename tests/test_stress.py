@@ -10,10 +10,11 @@ Proves three things against a live server under load:
   B. Slam stability -- a large mixed batch at high concurrency returns zero
      errors and zero malformed bodies.
   C. LRU eviction -- after pushing well past the cache budget, a recently-used
-     key kept in use during the fill survives (still served fast) while an
-     untouched early key is evicted (rebuilt on the next request). Optionally
-     also asserts the on-disk cache stays
-     within the byte budget when STRESS_CACHE_DIR points at it.
+     key kept in use during the fill survives while an untouched early key is
+     evicted. When STRESS_CACHE_DIR points at the server's cache it asserts this
+     deterministically by file presence (and that the on-disk total stays within
+     the byte budget); otherwise it falls back to a response-latency heuristic
+     (cache hit fast vs. rebuilt slow).
 
 Env:
   VELOSERVER_URL        base URL (default http://localhost:8105)
@@ -83,7 +84,7 @@ def test_concurrent_identical(r):
     ]
     for name, path, fmt, product in cases:
         with ThreadPoolExecutor(max_workers=n) as ex:
-            results = list(ex.map(lambda _: timed_get(path), range(n)))
+            results = list(ex.map(lambda _, path=path: timed_get(path), range(n)))
         statuses = [s for s, _, _, _ in results]
         bodies = [b for _, b, _, _ in results]
         oks = [_validate(fmt, b, product)[0] for b in bodies if b]
@@ -189,13 +190,45 @@ def _cache_bytes():
     return total
 
 
-def test_lru_eviction(r):
-    victim = cog("temp_2m", 46)   # requested once, never touched again -> oldest
-    recent = cog("winds", 4)      # kept in use throughout the fill -> survives
+def _cog_cache_basename(product, ts):
+    """The on-disk COG filename the server writes for ``/cog/<product>/<ts>``.
 
-    # Seed both into the cache.
-    timed_get(victim)
+    Mirrors ``process_data._cog_filename`` (kept in sync by hand rather than
+    imported, since the stress test may run from a host without the server's
+    GIS deps) so eviction can be checked by file presence instead of by latency.
+    ``ts`` is a 'YYYY-MM-DDTHH:00:00' timestamp as produced by ``hours_ago``."""
+    date, _, hms = ts.partition("T")
+    hour = hms.replace(":", "")
+    return f"hrrr-{product}-{date}T{hour}-3857-cog.tif"
+
+
+def _in_cache(basename):
+    """True/False if ``basename`` is present under CACHE_DIR; None when the cache
+    dir can't be inspected (e.g. testing a remote server)."""
+    if not CACHE_DIR or not os.path.isdir(CACHE_DIR):
+        return None
+    for _root, _d, files in os.walk(CACHE_DIR):
+        if basename in files:
+            return True
+    return False
+
+
+def test_lru_eviction(r):
+    # Pin the timestamps ONCE. hours_ago() recomputes "now" on every call, so
+    # re-deriving these mid-test could cross an hour boundary and silently retarget
+    # a different cache key than the one we seeded.
+    victim_ts = hours_ago(46)   # requested once, never touched again -> oldest
+    recent_ts = hours_ago(4)    # kept in use throughout the fill -> survives
+    victim = f"/cog/temp_2m/{victim_ts}Z"
+    recent = f"/cog/winds/{recent_ts}Z"
+    victim_name = _cog_cache_basename("temp_2m", victim_ts)
+    recent_name = _cog_cache_basename("winds", recent_ts)
+
+    # Seed both into the cache. The victim must actually land on disk, or there is
+    # nothing for eviction to remove and the assertion would be vacuous.
+    vstat, vbody, _ve, _vl = timed_get(victim)
     timed_get(recent)
+    victim_seeded = vstat == 200 and bool(vbody)
 
     # Fill: distinct uncached COGs until we've pushed well past the budget,
     # re-requesting the recent key every few rounds so it stays most-recently-used.
@@ -220,12 +253,52 @@ def test_lru_eviction(r):
     r.record("lru: fill", "PASS",
              f"pushed={pushed/1e6:.0f}MB across {n} uncached COGs (target>{target/1e6:.0f}MB){detail_disk}")
 
-    _s, _b, _e, recent_lat = timed_get(recent)
-    _s2, _b2, _e2, vic_lat = timed_get(victim)
-    r.check("lru: recently-used key survived eviction (still fast)",
-            recent_lat < CACHED_MAX, f"latency={recent_lat:.3f}s (< {CACHED_MAX}s)")
-    r.check("lru: untouched (oldest) key was evicted (rebuilt on request)",
-            vic_lat > REBUILT_MIN, f"victim_latency={vic_lat:.3f}s (> {REBUILT_MIN}s)")
+    # Only when the fill created more than a budget's worth of data did eviction
+    # actually have to run; below that, a surviving victim says nothing.
+    pressure_ok = pushed >= BUDGET
+
+    def _victim_skip_reason():
+        if not victim_seeded:
+            return f"victim not cached at seed (status={vstat}); no HRRR data ~46h back to evict"
+        if not pressure_ok:
+            return (f"fill pushed only {pushed/1e6:.0f}MB, under the {BUDGET/1e6:.0f}MB "
+                    f"budget; not enough pressure to force eviction")
+        return None
+
+    # Inspect the cache directory FIRST -- this is the deterministic eviction
+    # signal. It must be read before any further request to the victim, since
+    # requesting an evicted key rebuilds it straight back into the cache. Response
+    # latency can't tell "served from cache" from "rebuilt fast from a still-cached
+    # GRIB" from "failed fast", so it is only a fallback when the cache dir is not
+    # visible (e.g. testing a remote server).
+    victim_present = _in_cache(victim_name)
+    recent_present = _in_cache(recent_name)
+    skip_reason = _victim_skip_reason()
+
+    if recent_present is None:
+        # Cache dir not visible: fall back to the (less reliable) timing heuristic.
+        _s, _b, _e, recent_lat = timed_get(recent)
+        r.check("lru: recently-used key survived eviction (still fast)",
+                recent_lat < CACHED_MAX,
+                f"latency={recent_lat:.3f}s (< {CACHED_MAX}s) [timing-based; cache dir not visible]")
+        if skip_reason:
+            r.skipped("lru: untouched (oldest) key was evicted (rebuilt on request)", skip_reason)
+        else:
+            _s2, _b2, _e2, vic_lat = timed_get(victim)
+            r.check("lru: untouched (oldest) key was evicted (rebuilt on request)",
+                    vic_lat > REBUILT_MIN,
+                    f"victim_latency={vic_lat:.3f}s (> {REBUILT_MIN}s) [timing-based; cache dir not visible]")
+    else:
+        # Recent key should still be on disk; confirm it also serves fast.
+        _s, _b, _e, recent_lat = timed_get(recent)
+        r.check("lru: recently-used key survived eviction (present + fast)",
+                recent_present and recent_lat < CACHED_MAX,
+                f"in_cache={recent_present} latency={recent_lat:.3f}s (< {CACHED_MAX}s)")
+        if skip_reason:
+            r.skipped("lru: untouched (oldest) key was evicted (gone from cache)", skip_reason)
+        else:
+            r.check("lru: untouched (oldest) key was evicted (gone from cache)",
+                    not victim_present, f"victim_in_cache={victim_present}")
 
     if on_disk is not None:
         r.check("lru: on-disk cache stays within budget",
