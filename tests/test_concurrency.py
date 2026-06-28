@@ -86,7 +86,8 @@ def test_download_lock(r):
         r.check("lock released after context exit", _flock_is_free(lock_path), "")
         # re-acquire after release works (no leaked lock / fd)
         with concurrency._download_lock(d, key):
-            pass
+            r.check("lock re-acquired after release", not _flock_is_free(lock_path),
+                    "the second acquire should hold the lock")
         r.check("re-acquire after release works", _flock_is_free(lock_path), "")
     finally:
         shutil.rmtree(d, ignore_errors=True)

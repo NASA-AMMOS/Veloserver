@@ -8,6 +8,7 @@ Or via the suite:         python3 tests/run_all.py
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,23 +29,28 @@ def _raises_valueerror(fn):
 
 def test_safe_path(r):
     r.section("_safe_path (path confinement, S2083)")
-    base = "/tmp/velo-cache"
+    # _safe_path only computes paths, never writes, but use a private temp dir
+    # (0700) rather than a hardcoded public /tmp path (S5443).
+    base = tempfile.mkdtemp(prefix="velo-cache-")
     abase = os.path.abspath(base)
-    r.check("plain filename joins under base",
-            parse._safe_path(base, "hrrr-winds.tif") == os.path.join(abase, "hrrr-winds.tif"),
-            "")
-    r.check("nested filename under base allowed",
-            parse._safe_path(base, "sub/f.tif") == os.path.join(abase, "sub/f.tif"), "")
-    r.check("'../' traversal rejected",
-            _raises_valueerror(lambda: parse._safe_path(base, "../etc/passwd")), "want ValueError")
-    r.check("deep '../../' traversal rejected",
-            _raises_valueerror(lambda: parse._safe_path(base, "../../etc/passwd")), "want ValueError")
-    r.check("absolute path escape rejected",
-            _raises_valueerror(lambda: parse._safe_path(base, "/etc/passwd")), "want ValueError")
-    r.check("sneaky mid-path '..' rejected",
-            _raises_valueerror(lambda: parse._safe_path(base, "sub/../../etc/passwd")), "want ValueError")
-    r.check("base itself (empty name) allowed",
-            parse._safe_path(base, "") == abase, "")
+    try:
+        r.check("plain filename joins under base",
+                parse._safe_path(base, "hrrr-winds.tif") == os.path.join(abase, "hrrr-winds.tif"),
+                "")
+        r.check("nested filename under base allowed",
+                parse._safe_path(base, "sub/f.tif") == os.path.join(abase, "sub/f.tif"), "")
+        r.check("'../' traversal rejected",
+                _raises_valueerror(lambda: parse._safe_path(base, "../etc/passwd")), "want ValueError")
+        r.check("deep '../../' traversal rejected",
+                _raises_valueerror(lambda: parse._safe_path(base, "../../etc/passwd")), "want ValueError")
+        r.check("absolute path escape rejected",
+                _raises_valueerror(lambda: parse._safe_path(base, "/etc/passwd")), "want ValueError")
+        r.check("sneaky mid-path '..' rejected",
+                _raises_valueerror(lambda: parse._safe_path(base, "sub/../../etc/passwd")), "want ValueError")
+        r.check("base itself (empty name) allowed",
+                parse._safe_path(base, "") == abase, "")
+    finally:
+        os.rmdir(base)  # nothing is created inside, so it's still empty
 
 
 def test_is_allowed_path_info(r):
