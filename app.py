@@ -1,18 +1,11 @@
 import os
-import math
-import manage_cache
 import config
 import shutil
-from bottle import response as bottle_response
-from process_data import process_hrrr, process_ecmwf, process_gfs, HRRR_PRODUCTS, _safe_path
-from datetime import datetime
-
-# Allowlists for user-supplied URL tokens. Every value that ends up in a
-# filesystem path or subprocess argument must come from one of these closed
-# sets (or be a parsed number/date), so untrusted input can't steer file I/O
-# (path-injection hardening, Sonar S2083).
-ALLOWED_MODELS = {'hrrr', 'ecmwf', 'gfs'}
-ALLOWED_FORMATS = {'gribjson', 'geotiff', 'png'}
+from bottle import static_file, response
+from modules import manage_cache
+from modules.parse import (_safe_path, validate_request, canonical_product,
+                           parse_cog_time, parse_request_time)
+from process_data import process_hrrr, process_ecmwf, process_gfs, ensure_cog
 
 # HRRR output format -> (AVAILABLE_FORMATS key, file open mode). Drives reading
 # the processed file without a per-format if/elif chain.
@@ -21,6 +14,25 @@ _HRRR_FORMAT_IO = {
     'png': ('png', 'rb'),
     'gribjson': ('json', 'r'),
 }
+
+# Content type used for error bodies returned through the (content_type, data)
+# contract the data routes expect.
+_JSON = config.APP_CONFIG["AVAILABLE_FORMATS"]["json"]
+
+
+def json_error(status, message):
+    """Set the HTTP status and return a (content_type, body) pair, matching the
+    (content_type, data) contract this module's dispatch methods return. Shared
+    with server.py so the status-set + body pattern lives in one place."""
+    response.status = status
+    return (_JSON, message)
+
+
+def text_error(status, message):
+    """Set the HTTP status and return a plain-text body, for handlers/routes that
+    return the response body directly rather than a (content_type, data) pair."""
+    response.status = status
+    return message
 
 
 class App():
@@ -34,32 +46,33 @@ class App():
             os.makedirs(config.APP_CONFIG["CACHE_DIR"])
 
     def get_data(self, model, format, iso_string, projwin=None, product='winds'):
-        json_ct = config.APP_CONFIG["AVAILABLE_FORMATS"]["json"]
-
         # Validate all user-supplied tokens before they reach any path/subprocess.
-        projwin, error = self._validate_request(model, format, projwin, product)
+        projwin, error = validate_request(model, format, projwin, product)
         if error is not None:
-            bottle_response.status = 400
-            return (json_ct, error)
+            return json_error(400, error)
 
-        # fromisoformat rejects anything that isn't a real ISO datetime, so the
-        # date/hour strings derived from it below are safe to use in paths.
-        datetime_object = datetime.fromisoformat(iso_string)
+        # a bad datetime is a client error (400), not a server error (500)
+        try:
+            date, time = parse_request_time(iso_string)
+        except ValueError:
+            return json_error(400, f'Invalid datetime {iso_string!r}; expected ISO 8601 (e.g. 2024-03-05T19:00:00)')
 
-        if model == 'hrrr':
-            result = self._serve_hrrr(product, projwin, datetime_object, format)
-        elif model == 'ecmwf':
-            result = self._serve_json(process_ecmwf(
-                projwin,
-                datetime_object.strftime("%Y-%m-%d"),
-                config.APP_CONFIG["CACHE_DIR"]))
-        else:
-            # Last case would be gfs here.
-            result = self._serve_json(process_gfs(
-                projwin,
-                datetime_object.strftime("%Y-%m-%d"),
-                datetime_object.strftime("%H:%M:%S"),
-                config.APP_CONFIG["CACHE_DIR"]))
+        # if fetching or processing the data fails, return a 502 instead of
+        # letting the error become a 500 page
+        try:
+            if model == 'hrrr':
+                result = self._serve_hrrr(product, projwin, date, time, format)
+            elif model == 'ecmwf':
+                result = self._serve_json(process_ecmwf(
+                    projwin, date, config.APP_CONFIG["CACHE_DIR"]))
+            else:
+                # Last case would be gfs here.
+                result = self._serve_json(process_gfs(
+                    projwin, date, time, config.APP_CONFIG["CACHE_DIR"]))
+        except Exception as e:
+            # flush so the reason is written to the log right away
+            print(f'[get_data] upstream {model} fetch failed: {e}', flush=True)
+            return json_error(502, f'Upstream data fetch failed for {model}')
 
         # Keep the cache under its byte budget. Runs after the response is read
         # into memory (and the served file's mtime is freshened), so the file we
@@ -67,45 +80,50 @@ class App():
         manage_cache.enforce_configured(config.APP_CONFIG)
         return result
 
-    @staticmethod
-    def _validate_request(model, format, projwin, product):
-        """Validate user tokens. Returns (parsed_projwin, error_msg); error_msg
-        is None when everything is valid."""
-        if model not in ALLOWED_MODELS:
-            return projwin, f'Unsupported model: {model}'
-        if format not in ALLOWED_FORMATS:
-            return projwin, f'Unsupported format: {format}'
-        if model == 'hrrr' and product not in HRRR_PRODUCTS:
-            return projwin, f'Unknown product: {product}'
-        if projwin is not None:
-            try:
-                projwin = [float(v) for v in projwin]
-            except (TypeError, ValueError):
-                projwin = None
-            if not projwin or len(projwin) != 4 or not all(map(math.isfinite, projwin)):
-                return projwin, 'Invalid projwin: expected 4 numbers ulx,uly,lrx,lry'
-        return projwin, None
+    def serve_cog(self, product, time_param):
+        """Serve the EPSG:3857 COG for a product/time, building it on a cache miss.
+        Returns a static_file response on success, or an error body via responses."""
+        try:
+            product = canonical_product(product)
+            date, hour = parse_cog_time(time_param)
+        except ValueError as e:
+            return text_error(400, str(e))
+        print(f'[COG] parsed → date={date!r}, hour={hour!r}')
+        cache_dir = config.APP_CONFIG['CACHE_DIR']
 
-    def _serve_hrrr(self, product, projwin, datetime_object, format):
+        try:
+            # ensure_cog returns the existing path on a cache hit (before taking any
+            # lock) and builds it on a miss, so no separate existence pre-check.
+            cog_path = ensure_cog(product, date, hour, cache_dir)
+            # Freshen mtime then evict *before* streaming, so the COG we are about to
+            # serve is the most-recently-used file and cannot be deleted mid-stream.
+            manage_cache.mark_used(cog_path)
+            manage_cache.enforce_configured(config.APP_CONFIG)
+            return static_file(os.path.basename(cog_path), root=cache_dir, mimetype='image/tiff')
+        except (FileNotFoundError, ValueError):
+            return text_error(404, f'No HRRR data available for {product} at the requested time')
+        except Exception as e:
+            print(f'[COG] error serving {product}: {e}')
+            return text_error(500, 'Error serving COG')
+
+    def _serve_hrrr(self, product, projwin, date, time, format):
         output = process_hrrr(product,
                               projwin,
-                              datetime_object.strftime("%Y-%m-%d"),
-                              datetime_object.strftime("%H:%M:%S"),
+                              date,
+                              time,
                               config.APP_CONFIG["CACHE_DIR"],
                               format)
         # process_hrrr returns an output file path on success, or a plain
         # error message (e.g. unsupported product/format) on failure.
         if not os.path.isfile(output):
-            bottle_response.status = 400
-            return (config.APP_CONFIG["AVAILABLE_FORMATS"]["json"], output)
+            return json_error(400, output)
         ct_key, mode = _HRRR_FORMAT_IO.get(format, ('json', 'r'))
         return self._read_output(output, ct_key, mode)
 
     def _serve_json(self, output):
         """ecmwf/gfs produce a JSON file path on success, or an error string."""
         if not os.path.isfile(output):
-            bottle_response.status = 400
-            return (config.APP_CONFIG["AVAILABLE_FORMATS"]["json"], output)
+            return json_error(400, output)
         return self._read_output(output, 'json', 'r')
 
     @staticmethod

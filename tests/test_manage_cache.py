@@ -8,7 +8,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from helpers import Results
-import manage_cache
+from modules import manage_cache
 
 
 def _mkfile(path, size, mtime):
@@ -99,10 +99,26 @@ def test_disabled(r):
                 f'deleted={deleted}')
 
 
+def test_enforce_configured(r):
+    # The wrapper app.py/server.py actually call: reads APP_CONFIG values and must
+    # never raise (cache upkeep can't be allowed to fail a data response).
+    with tempfile.TemporaryDirectory() as d:
+        for i in range(5):
+            _mkfile(os.path.join(d, f'f{i}'), 100, 1000 + i)
+        cfg = {'CACHE_DIR': d, 'CACHE_MAX_BYTES': 300,
+               'CACHE_TTL_HOURS': 0, 'CACHE_TARGET_RATIO': 0.85}
+        deleted = manage_cache.enforce_configured(cfg)
+        r.check('enforce_configured delegates to enforce_budget', deleted == 3, f'deleted={deleted}')
+    # A broken config (missing CACHE_DIR -> KeyError) is swallowed, not raised.
+    r.check('enforce_configured swallows config errors -> 0',
+            manage_cache.enforce_configured({}) == 0, '')
+
+
 def run(r):
     r.section('manage_cache.py LRU eviction (unit)')
     for test in (test_under_budget, test_evicts_oldest_first, test_mark_used_protects,
-                 test_never_evicts_locks, test_recursive_and_prunes_dirs, test_ttl, test_disabled):
+                 test_never_evicts_locks, test_recursive_and_prunes_dirs, test_ttl, test_disabled,
+                 test_enforce_configured):
         test(r)
 
 

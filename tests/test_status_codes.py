@@ -35,6 +35,9 @@ def run(r):
     r.section("Path-injection / malformed input should return 400 (Sonar S2083)")
     _expect_status(r, "COG unknown product -> 400", f"/cog/bogus/{T}Z", 400)
     _expect_status(r, "COG product traversal -> 400", f"/cog/..%2f..%2fetc/{T}Z", 400)
+    # Malformed COG time must be a clean 400 (parse_cog_time), not a 500. Regression
+    # guard: serve_cog used to call fromisoformat outside its try and 500 on bad input.
+    _expect_status(r, "COG malformed time -> 400", "/cog/winds/2024-13-45T99:00:00Z", 400)
     _expect_status(r, "projwin non-numeric -> 400", f"/gfs/gribjson/{T}/a,b,c,d", 400)
     _expect_status(r, "projwin dotdot -> 400", f"/gfs/gribjson/{T}/..,..,..,..", 400)
     _expect_status(r, "unknown format -> 400", f"/gfs/xml/{T}", 400)

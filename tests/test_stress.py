@@ -213,6 +213,82 @@ def _in_cache(basename):
     return False
 
 
+def _fill_past_budget(recent, target):
+    """Request distinct uncached COGs until we've pushed past `target` bytes,
+    re-requesting the recent key every few rounds so it stays most-recently-used.
+    Returns (pushed_bytes, count_of_uncached_cogs)."""
+    pushed = 0
+    n = 0
+    fill = [(p, h) for h in range(6, 46) for p in HRRR_PRODUCTS]
+    for p, h in fill:
+        if (p, h) in (("temp_2m", 46), ("winds", 4)):
+            continue
+        status, body, _err, _lat = timed_get(cog(p, h))
+        if status == 200 and body:
+            pushed += len(body)
+            n += 1
+        if n % 4 == 0:
+            timed_get(recent)  # refresh recency
+        if pushed >= target:
+            break
+    return pushed, n
+
+
+def _victim_skip_reason(victim_seeded, vstat, pushed):
+    """Reason the eviction assertion can't run (so it should skip), or None when it
+    can. Skips when the victim never landed in the cache, or the fill didn't exceed
+    the budget so eviction was never forced and a surviving victim says nothing."""
+    if not victim_seeded:
+        return f"victim not cached at seed (status={vstat}); no HRRR data ~46h back to evict"
+    if pushed < BUDGET:
+        return (f"fill pushed only {pushed/1e6:.0f}MB, under the {BUDGET/1e6:.0f}MB "
+                f"budget; not enough pressure to force eviction")
+    return None
+
+
+def _check_recent_survived(r, recent, recent_present):
+    """The recently-used key should still be cached. Confirm by on-disk presence
+    when the cache dir is visible, otherwise by a fast response (timing fallback)."""
+    _s, _b, _e, recent_lat = timed_get(recent)
+    if recent_present is None:
+        r.check("lru: recently-used key survived eviction (still fast)",
+                recent_lat < CACHED_MAX,
+                f"latency={recent_lat:.3f}s (< {CACHED_MAX}s) [timing-based; cache dir not visible]")
+    else:
+        r.check("lru: recently-used key survived eviction (present + fast)",
+                recent_present and recent_lat < CACHED_MAX,
+                f"in_cache={recent_present} latency={recent_lat:.3f}s (< {CACHED_MAX}s)")
+
+
+def _check_victim_evicted(r, victim, victim_present, recent_present, skip_reason):
+    """The untouched (oldest) key should have been evicted, or skip with a reason.
+    With the cache dir visible this is a presence check; otherwise the victim is
+    re-requested and a slow (rebuilt) response stands in for "was evicted"."""
+    name = ("lru: untouched (oldest) key was evicted (rebuilt on request)"
+            if recent_present is None
+            else "lru: untouched (oldest) key was evicted (gone from cache)")
+    if skip_reason:
+        r.skipped(name, skip_reason)
+    elif recent_present is None:
+        _s, _b, _e, vic_lat = timed_get(victim)
+        r.check(name, vic_lat > REBUILT_MIN,
+                f"victim_latency={vic_lat:.3f}s (> {REBUILT_MIN}s) [timing-based; cache dir not visible]")
+    else:
+        r.check(name, not victim_present, f"victim_in_cache={victim_present}")
+
+
+def _check_within_budget(r, on_disk):
+    """The on-disk cache should stay near the byte budget after the fill, or skip
+    when the cache dir isn't visible to measure it."""
+    if on_disk is not None:
+        r.check("lru: on-disk cache stays within budget",
+                on_disk <= BUDGET * 1.15,
+                f"on_disk={on_disk/1e6:.0f}MB <= {BUDGET*1.15/1e6:.0f}MB")
+    else:
+        r.skipped("lru: on-disk cache stays within budget",
+                  "set STRESS_CACHE_DIR to the server's cache dir to enable")
+
+
 def test_lru_eviction(r):
     # Pin the timestamps ONCE. hours_ago() recomputes "now" on every call, so
     # re-deriving these mid-test could cross an hour boundary and silently retarget
@@ -230,83 +306,27 @@ def test_lru_eviction(r):
     timed_get(recent)
     victim_seeded = vstat == 200 and bool(vbody)
 
-    # Fill: distinct uncached COGs until we've pushed well past the budget,
-    # re-requesting the recent key every few rounds so it stays most-recently-used.
-    pushed = 0
+    # Fill past the budget so eviction is forced, keeping the recent key warm.
     target = int(BUDGET * 1.6)
-    fill = [(p, h) for h in range(6, 46) for p in HRRR_PRODUCTS]
-    n = 0
-    for p, h in fill:
-        if (p, h) in (("temp_2m", 46), ("winds", 4)):
-            continue
-        status, body, _err, _lat = timed_get(cog(p, h))
-        if status == 200 and body:
-            pushed += len(body)
-            n += 1
-        if n % 4 == 0:
-            timed_get(recent)  # refresh recency
-        if pushed >= target:
-            break
+    pushed, n = _fill_past_budget(recent, target)
 
     on_disk = _cache_bytes()
     detail_disk = f" cache_on_disk={on_disk/1e6:.0f}MB budget={BUDGET/1e6:.0f}MB" if on_disk else ""
     r.record("lru: fill", "PASS",
              f"pushed={pushed/1e6:.0f}MB across {n} uncached COGs (target>{target/1e6:.0f}MB){detail_disk}")
 
-    # Only when the fill created more than a budget's worth of data did eviction
-    # actually have to run; below that, a surviving victim says nothing.
-    pressure_ok = pushed >= BUDGET
-
-    def _victim_skip_reason():
-        if not victim_seeded:
-            return f"victim not cached at seed (status={vstat}); no HRRR data ~46h back to evict"
-        if not pressure_ok:
-            return (f"fill pushed only {pushed/1e6:.0f}MB, under the {BUDGET/1e6:.0f}MB "
-                    f"budget; not enough pressure to force eviction")
-        return None
+    skip_reason = _victim_skip_reason(victim_seeded, vstat, pushed)
 
     # Inspect the cache directory FIRST -- this is the deterministic eviction
-    # signal. It must be read before any further request to the victim, since
-    # requesting an evicted key rebuilds it straight back into the cache. Response
-    # latency can't tell "served from cache" from "rebuilt fast from a still-cached
-    # GRIB" from "failed fast", so it is only a fallback when the cache dir is not
-    # visible (e.g. testing a remote server).
+    # signal, and it must be read before re-requesting the victim, since requesting
+    # an evicted key rebuilds it straight back into the cache. The per-key checks
+    # below fall back to response latency only when the cache dir isn't visible.
     victim_present = _in_cache(victim_name)
     recent_present = _in_cache(recent_name)
-    skip_reason = _victim_skip_reason()
 
-    if recent_present is None:
-        # Cache dir not visible: fall back to the (less reliable) timing heuristic.
-        _s, _b, _e, recent_lat = timed_get(recent)
-        r.check("lru: recently-used key survived eviction (still fast)",
-                recent_lat < CACHED_MAX,
-                f"latency={recent_lat:.3f}s (< {CACHED_MAX}s) [timing-based; cache dir not visible]")
-        if skip_reason:
-            r.skipped("lru: untouched (oldest) key was evicted (rebuilt on request)", skip_reason)
-        else:
-            _s2, _b2, _e2, vic_lat = timed_get(victim)
-            r.check("lru: untouched (oldest) key was evicted (rebuilt on request)",
-                    vic_lat > REBUILT_MIN,
-                    f"victim_latency={vic_lat:.3f}s (> {REBUILT_MIN}s) [timing-based; cache dir not visible]")
-    else:
-        # Recent key should still be on disk; confirm it also serves fast.
-        _s, _b, _e, recent_lat = timed_get(recent)
-        r.check("lru: recently-used key survived eviction (present + fast)",
-                recent_present and recent_lat < CACHED_MAX,
-                f"in_cache={recent_present} latency={recent_lat:.3f}s (< {CACHED_MAX}s)")
-        if skip_reason:
-            r.skipped("lru: untouched (oldest) key was evicted (gone from cache)", skip_reason)
-        else:
-            r.check("lru: untouched (oldest) key was evicted (gone from cache)",
-                    not victim_present, f"victim_in_cache={victim_present}")
-
-    if on_disk is not None:
-        r.check("lru: on-disk cache stays within budget",
-                on_disk <= BUDGET * 1.15,
-                f"on_disk={on_disk/1e6:.0f}MB <= {BUDGET*1.15/1e6:.0f}MB")
-    else:
-        r.skipped("lru: on-disk cache stays within budget",
-                  "set STRESS_CACHE_DIR to the server's cache dir to enable")
+    _check_recent_survived(r, recent, recent_present)
+    _check_victim_evicted(r, victim, victim_present, recent_present, skip_reason)
+    _check_within_budget(r, on_disk)
 
 
 def run(r):

@@ -229,7 +229,12 @@ class Results:
 
     def record(self, name, outcome, detail=""):
         self.rows.append((name, outcome, detail))
-        print(f"[{outcome:4}] {name:46} -> {detail}")
+        # On a pass, just show what was tested. Keep the detail for FAIL/SKIP,
+        # where it's the failure reason or the skip hint.
+        if outcome == "PASS" or not detail:
+            print(f"[{outcome:4}] {name}")
+        else:
+            print(f"[{outcome:4}] {name:46} -> {detail}")
 
     def passed(self, name, detail=""):
         self.record(name, "PASS", detail)
