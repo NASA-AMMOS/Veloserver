@@ -12,8 +12,12 @@ import json
 import shutil
 import tempfile
 import subprocess
-import urllib.request
+import sys
 import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from config import NODATA  # noqa: E402
 from datetime import datetime, timedelta, timezone
 
 BASE = os.environ.get("VELOSERVER_URL", "http://localhost:8104")
@@ -129,7 +133,7 @@ def validate_png(body):
     return True, f"png bytes={len(body)}"
 
 
-_NODATA = -9999.0
+_NODATA = float(NODATA)
 
 
 def _uvspeed_at_pixel(p, x, y):

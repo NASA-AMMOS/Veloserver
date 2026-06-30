@@ -42,3 +42,5 @@ WINDS_BAND_COLORMAPS = {
     'v':     {'cmap': 'RdBu_r',  'label': 'Wind V Component (m/s)'},
     'speed': {'cmap': 'viridis', 'label': 'Wind Speed (m/s)'},
 }
+
+NODATA = -9999
