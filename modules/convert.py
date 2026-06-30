@@ -82,7 +82,7 @@ def _create_cog(grib_path, output_file, product):
         # Step 1: warp to EPSG:3857, Float32 with nodata.
         subprocess.run([
             'gdalwarp', '-of', 'GTiff', '-t_srs', 'EPSG:3857', '-r', 'near',
-            '-ot', 'Float32', '-srcnodata', 'nan', '-dstnodata', '9999',
+            '-ot', 'Float32', '-srcnodata', 'nan', '-dstnodata', '-9999',
             '-co', 'TILED=YES', '-co', 'COMPRESS=LZW',
             '-co', 'BLOCKXSIZE=512', '-co', 'BLOCKYSIZE=512',
             grib_path, tmp_tif
@@ -96,11 +96,11 @@ def _create_cog(grib_path, output_file, product):
                 nodata = src.nodata
                 mask = (u == nodata) | (v == nodata) if nodata is not None else np.zeros_like(u, dtype=bool)
                 speed = np.sqrt(u**2 + v**2)
-                u[mask] = 9999
-                v[mask] = 9999
-                speed[mask] = 9999
+                u[mask] = -9999
+                v[mask] = -9999
+                speed[mask] = -9999
                 profile = src.profile.copy()
-            profile.update(count=3, nodata=9999)
+            profile.update(count=3, nodata=-9999)
             with rasterio.open(tmp_uvs, 'w', **profile) as dst:
                 dst.write(u, 1)
                 dst.write(v, 2)
@@ -117,9 +117,9 @@ def _create_cog(grib_path, output_file, product):
                 nodata = src.nodata
                 mask = (band == nodata) if nodata is not None else np.zeros_like(band, dtype=bool)
                 band = band * 1e9
-                band[mask] = 9999
+                band[mask] = -9999
                 profile = src.profile.copy()
-            profile.update(count=1, nodata=9999)
+            profile.update(count=1, nodata=-9999)
             with rasterio.open(tmp_scaled, 'w', **profile) as dst:
                 dst.write(band, 1)
             os.remove(tmp_tif)

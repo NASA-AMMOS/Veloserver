@@ -129,7 +129,7 @@ def validate_png(body):
     return True, f"png bytes={len(body)}"
 
 
-_NODATA = 9999.0
+_NODATA = -9999.0
 
 
 def _uvspeed_at_pixel(p, x, y):
