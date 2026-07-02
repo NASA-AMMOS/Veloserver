@@ -26,7 +26,6 @@ docker run --rm -p 8104:8104 -v ~/.ecmwfapirc:/root/.ecmwfapirc/ -v $(pwd)/certs
 
 To use ECMWF data, you need to have an ECMWF account with an appropriate [licence](https://www.ecmwf.int/en/forecasts/accessing-forecasts/licences-available) and your key added to `~/.ecmwfapirc`.
 
-
 ### Usage
 
 Default server port is 8104. REST requests are structured in the form:
