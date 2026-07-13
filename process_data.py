@@ -151,25 +151,25 @@ def process_hrrr(product, projwin, date, time, output_dir, format):
     return _convert_hrrr(output_grib, format, product)
 
 
-def _cog_name_prefix(product, date, hour):
-    """Shared leading part of every HRRR COG cache filename (COG file + lock).
-    One source of truth so the cache-hit check and the lock key agree. ``hour``
-    colons are stripped for filesystem portability."""
-    return f'hrrr-{product}-{date}T{hour.replace(":", "")}'
+def _cog_name_prefix(product, date, hour, fxx):
+    """Shared leading part of every HRRR COG cache filename (COG file + lock), so
+    the cache-hit check and the lock key agree. ``hour`` colons are stripped; the
+    zero-padded fxx is included so forecast hours of a run don't collide."""
+    return f'hrrr-{product}-{date}T{hour.replace(":", "")}-f{fxx:02d}'
 
 
-def _cog_filename(product, date, hour):
+def _cog_filename(product, date, hour, fxx):
     """Canonical EPSG:3857 COG cache filename; shared by the writer and the
     cache-hit check, which must agree byte-for-byte."""
-    return _cog_name_prefix(product, date, hour) + '-3857-cog.tif'
+    return _cog_name_prefix(product, date, hour, fxx) + '-3857-cog.tif'
 
 
-def _download_hrrr_native(product, date, hour, cache_dir):
+def _download_hrrr_native(product, date, hour, fxx, cache_dir):
     """Download the native-grid HRRR GRIB for the COG path, re-downloading once if
     the file is missing or unreadable by gdal (partial/corrupt fetch). Returns the
-    GRIB path. product/date/hour are already validated at the request boundary."""
+    GRIB path. product/date/hour/fxx are already validated at the request boundary."""
     search = HRRR_PRODUCTS[product]['search']
-    H = Herbie(date + ' ' + hour, model='hrrr', fxx=0, save_dir=cache_dir)
+    H = Herbie(date + ' ' + hour, model='hrrr', fxx=fxx, save_dir=cache_dir)
     grib_file = str(H.download(search, verbose=False))
     gdalinfo_result = subprocess.run(['gdalinfo', grib_file], capture_output=True)
     if not os.path.exists(grib_file) or gdalinfo_result.returncode != 0:
@@ -180,18 +180,18 @@ def _download_hrrr_native(product, date, hour, cache_dir):
     return grib_file
 
 
-def ensure_cog(product, date, hour, cache_dir):
-    """Return the EPSG:3857 COG path for an HRRR product/time, building it on a
-    cache miss."""
-    cog_file = _safe_path(cache_dir, _cog_filename(product, date, hour))
+def ensure_cog(product, date, hour, fxx, cache_dir):
+    """Return the EPSG:3857 COG path for an HRRR product/run/forecast-hour,
+    building it on a cache miss."""
+    cog_file = _safe_path(cache_dir, _cog_filename(product, date, hour, fxx))
     if os.path.exists(cog_file):
         return cog_file
     # One cross-process builder per COG: the lock spans download AND generate so
     # two gunicorn workers can't both fetch and build the same COG
-    with _download_lock(cache_dir, _cog_name_prefix(product, date, hour)):
+    with _download_lock(cache_dir, _cog_name_prefix(product, date, hour, fxx)):
         if os.path.exists(cog_file):
             return cog_file
-        grib_file = _download_hrrr_native(product, date, hour, cache_dir)
+        grib_file = _download_hrrr_native(product, date, hour, fxx, cache_dir)
         return convert.to_cog(grib_file, cog_file, product)
 
 def process_ecmwf(projwin, date, output_dir):

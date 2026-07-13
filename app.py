@@ -4,7 +4,7 @@ import shutil
 from bottle import static_file, response
 from modules import manage_cache
 from modules.parse import (_safe_path, validate_request, canonical_product,
-                           parse_cog_time, parse_request_time)
+                           parse_cog_time, parse_request_time, parse_fxx)
 from process_data import process_hrrr, process_ecmwf, process_gfs, ensure_cog
 
 # HRRR output format -> (AVAILABLE_FORMATS key, file open mode). Drives reading
@@ -80,21 +80,22 @@ class App():
         manage_cache.enforce_configured(config.APP_CONFIG)
         return result
 
-    def serve_cog(self, product, time_param):
-        """Serve the EPSG:3857 COG for a product/time, building it on a cache miss.
-        Returns a static_file response on success, or an error body via responses."""
+    def serve_cog(self, product, time_param, fxx_raw=None):
+        """Serve the EPSG:3857 COG for a product/run/forecast-hour, building it on
+        a cache miss. ``fxx_raw`` is the ?fxx= query value (None -> F00)."""
         try:
             product = canonical_product(product)
             date, hour = parse_cog_time(time_param)
+            fxx = parse_fxx(fxx_raw, hour)
         except ValueError as e:
             return text_error(400, str(e))
-        print(f'[COG] parsed → date={date!r}, hour={hour!r}')
+        print(f'[COG] parsed → date={date!r}, hour={hour!r}, fxx={fxx}')
         cache_dir = config.APP_CONFIG['CACHE_DIR']
 
         try:
             # ensure_cog returns the existing path on a cache hit (before taking any
             # lock) and builds it on a miss, so no separate existence pre-check.
-            cog_path = ensure_cog(product, date, hour, cache_dir)
+            cog_path = ensure_cog(product, date, hour, fxx, cache_dir)
             # Freshen mtime then evict *before* streaming, so the COG we are about to
             # serve is the most-recently-used file and cannot be deleted mid-stream.
             manage_cache.mark_used(cog_path)

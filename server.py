@@ -9,7 +9,9 @@ dataApp = App()
 
 @bottle_app.route('/cog/<product>/<time_param:path>')
 def cog_path(product, time_param):
-    return dataApp.serve_cog(product, time_param)
+    # fxx as a query param keeps the URL ending in .tif/.tiff for GDAL's
+    # extension gate; absent -> F00.
+    return dataApp.serve_cog(product, time_param, request.query.get('fxx'))
 
 
 def enable_cors(fn):

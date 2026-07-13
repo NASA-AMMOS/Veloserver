@@ -12,6 +12,11 @@ from config import HRRR_PRODUCTS
 ALLOWED_MODELS = {'hrrr', 'ecmwf', 'gfs'}
 ALLOWED_FORMATS = {'gribjson', 'geotiff', 'png'}
 
+# HRRR forecast-hour limits: F18 every run, F48 only for the 00/06/12/18z runs.
+HRRR_FXX_MAX_STANDARD = 18
+HRRR_FXX_MAX_EXTENDED = 48
+HRRR_EXTENDED_INIT_HOURS = {0, 6, 12, 18}
+
 # Allowlist of the characters our routes actually use (word chars plus the
 # separators in dates, bboxes and products).
 _ALLOWED_PATH_INFO = re.compile(r'\A[\w./:,+-]*\Z')
@@ -115,6 +120,27 @@ def parse_cog_time(time_param):
         raise ValueError('time parameter is required')
     datetime_object = datetime.fromisoformat(time_param.replace('Z', '+00:00'))
     return datetime_object.strftime('%Y-%m-%d'), datetime_object.strftime('%H:00:00')
+
+
+def parse_fxx(raw, hour):
+    """Coerce the ?fxx= query value to a validated forecast-hour int. Absent
+    (None/'') -> 0 (the F00 analysis). ``hour`` is parse_cog_time's 'HH:00:00';
+    its init hour sets the ceiling. Raises ValueError (-> 400) on a non-integer
+    or out-of-range value."""
+    raw = (raw or '0').strip()
+    try:
+        fxx = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f'fxx must be an integer, got {raw!r}')
+    init_hour = int(hour[:2])
+    max_fxx = (HRRR_FXX_MAX_EXTENDED
+               if init_hour in HRRR_EXTENDED_INIT_HOURS
+               else HRRR_FXX_MAX_STANDARD)
+    if not 0 <= fxx <= max_fxx:
+        raise ValueError(
+            f'fxx {fxx} out of range for the {init_hour:02d}z HRRR run '
+            f'(valid 0-{max_fxx}; F19-48 only for 00/06/12/18z runs).')
+    return fxx
 
 
 def hrrr_format_error(product, format):

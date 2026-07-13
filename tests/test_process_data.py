@@ -37,17 +37,23 @@ def test_lon360(r):
 
 def test_cog_filename(r):
     r.section("process_data COG cache-filename scheme")
-    prefix = _cog_name_prefix("winds", "2024-03-05", "19:00:00")
-    r.check("name prefix strips colons from hour",
-            prefix == "hrrr-winds-2024-03-05T190000", f"got {prefix!r}")
-    fname = _cog_filename("winds", "2024-03-05", "19:00:00")
+    prefix = _cog_name_prefix("winds", "2024-03-05", "19:00:00", 0)
+    r.check("name prefix strips colons from hour, appends zero-padded fxx",
+            prefix == "hrrr-winds-2024-03-05T190000-f00", f"got {prefix!r}")
+    fname = _cog_filename("winds", "2024-03-05", "19:00:00", 0)
     r.check("cog filename = prefix + -3857-cog.tif",
-            fname == "hrrr-winds-2024-03-05T190000-3857-cog.tif", f"got {fname!r}")
+            fname == "hrrr-winds-2024-03-05T190000-f00-3857-cog.tif", f"got {fname!r}")
     r.check("filename has no path separators (single cache file)",
             "/" not in fname and os.sep not in fname, f"got {fname!r}")
     r.check("scalar product flows through the same scheme",
-            _cog_filename("temp_2m", "2024-03-05", "00:00:00")
-            == "hrrr-temp_2m-2024-03-05T000000-3857-cog.tif", "")
+            _cog_filename("temp_2m", "2024-03-05", "00:00:00", 0)
+            == "hrrr-temp_2m-2024-03-05T000000-f00-3857-cog.tif", "")
+    r.check("distinct forecast hours get distinct filenames",
+            _cog_filename("winds", "2024-03-05", "00:00:00", 6)
+            == "hrrr-winds-2024-03-05T000000-f06-3857-cog.tif", "")
+    r.check("two-digit fxx keeps zero-padding width",
+            _cog_name_prefix("winds", "2024-03-05", "00:00:00", 48)
+            == "hrrr-winds-2024-03-05T000000-f48", "")
 
 
 def run(r):

@@ -172,6 +172,28 @@ def test_parse_cog_time(r):
             _raises_valueerror(lambda: parse.parse_cog_time("garbage")), "want ValueError")
 
 
+def test_parse_fxx(r):
+    r.section("parse_fxx (?fxx= query value -> validated forecast hour)")
+    r.check("absent (None) -> 0 (F00 analysis, backward compatible)",
+            parse.parse_fxx(None, "19:00:00") == 0, f"got {parse.parse_fxx(None, '19:00:00')}")
+    r.check("empty string -> 0", parse.parse_fxx("", "19:00:00") == 0, "")
+    r.check("'6' -> 6", parse.parse_fxx("6", "19:00:00") == 6, "")
+    r.check("f18 valid for a non-synoptic run",
+            parse.parse_fxx("18", "19:00:00") == 18, "")
+    r.check("f19 rejected for a non-synoptic run",
+            _raises_valueerror(lambda: parse.parse_fxx("19", "19:00:00")), "want ValueError")
+    r.check("f48 valid for a 00z synoptic run",
+            parse.parse_fxx("48", "00:00:00") == 48, "")
+    r.check("f48 valid for an 18z synoptic run",
+            parse.parse_fxx("48", "18:00:00") == 48, "")
+    r.check("f49 rejected even for a synoptic run",
+            _raises_valueerror(lambda: parse.parse_fxx("49", "12:00:00")), "want ValueError")
+    r.check("negative fxx rejected",
+            _raises_valueerror(lambda: parse.parse_fxx("-1", "00:00:00")), "want ValueError")
+    r.check("non-integer rejected",
+            _raises_valueerror(lambda: parse.parse_fxx("abc", "00:00:00")), "want ValueError")
+
+
 def test_hrrr_format_error(r):
     r.section("hrrr_format_error (gribjson is winds-only)")
     r.check("scalar + gribjson -> message",
@@ -190,6 +212,7 @@ def run(r):
     test_projwin_to_string(r)
     test_parse_request_time(r)
     test_parse_cog_time(r)
+    test_parse_fxx(r)
     test_hrrr_format_error(r)
 
 

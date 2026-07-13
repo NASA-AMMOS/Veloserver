@@ -196,10 +196,11 @@ def _cog_cache_basename(product, ts):
     Mirrors ``process_data._cog_filename`` (kept in sync by hand rather than
     imported, since the stress test may run from a host without the server's
     GIS deps) so eviction can be checked by file presence instead of by latency.
-    ``ts`` is a 'YYYY-MM-DDTHH:00:00' timestamp as produced by ``hours_ago``."""
+    ``ts`` is a 'YYYY-MM-DDTHH:00:00' timestamp as produced by ``hours_ago``.
+    The stress test requests default (F00) COGs, so the mirror pins '-f00'."""
     date, _, hms = ts.partition("T")
     hour = hms.replace(":", "")
-    return f"hrrr-{product}-{date}T{hour}-3857-cog.tif"
+    return f"hrrr-{product}-{date}T{hour}-f00-3857-cog.tif"
 
 
 def _in_cache(basename):
