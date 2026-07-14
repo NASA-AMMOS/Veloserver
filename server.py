@@ -68,7 +68,8 @@ def get_data(model, format, datetime):
     (output_format, data) = dataApp.get_data(model,
                                              format,
                                              datetime,
-                                             None)
+                                             None,
+                                             fxx_raw=request.query.get('fxx'))
     response.content_type = output_format
     return data
 
@@ -79,14 +80,15 @@ def get_data_four_segment(model, seg2, seg3, seg4):
     """Two different 4-part URLs land here. A bbox shape (model/format/datetime/projwin)
     and a product shape (model/product/format/datetime) look the same to the router, so
     we tell them apart by content, since only a bbox ever has a comma."""
+    fxx = request.query.get('fxx')
     if ',' in seg4:
         fmt, dt, projwin = seg2, seg3, seg4.split(',')
         if len(projwin) != 4:
             return text_error(400, 'Invalid projwin. Must be in format: ulx,uly,lrx,lry')
-        (output_format, data) = dataApp.get_data(model, fmt, dt, projwin)
+        (output_format, data) = dataApp.get_data(model, fmt, dt, projwin, fxx_raw=fxx)
     else:
         product, fmt, dt = seg2, seg3, seg4
-        (output_format, data) = dataApp.get_data(model, fmt, dt, None, product)
+        (output_format, data) = dataApp.get_data(model, fmt, dt, None, product, fxx_raw=fxx)
     response.content_type = output_format
     return data
 
@@ -96,7 +98,8 @@ def get_data_four_segment(model, seg2, seg3, seg4):
 def get_data_product_projwin(model, product, format, datetime, projwin):
     projwin = projwin.split(',')
     if len(projwin) == 4:
-        (output_format, data) = dataApp.get_data(model, format, datetime, projwin, product)
+        (output_format, data) = dataApp.get_data(model, format, datetime, projwin, product,
+                                                 fxx_raw=request.query.get('fxx'))
         response.content_type = output_format
         return data
     return text_error(400, 'Invalid projwin. Must be in format: ulx,uly,lrx,lry')

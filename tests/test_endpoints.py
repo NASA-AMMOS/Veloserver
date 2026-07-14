@@ -41,6 +41,47 @@ def _run_case(r, name, path, fmt, product=None):
     r.check(name, ok, detail)
 
 
+def _fetch_gribjson(r, name, path):
+    """Fetch a gribjson path, assert 200 + valid winds gribjson, and return the
+    body so callers can compare it. Returns None if the case failed."""
+    status, body, err = fetch(path)
+    if err:
+        r.failed(name, f"ERROR {err}")
+        return None
+    if status != 200:
+        r.failed(name, f"HTTP {status}: {body[:100].decode('utf-8', 'replace')}")
+        return None
+    ok, detail = validate_gribjson(body, "winds")
+    r.check(name, ok, detail)
+    return body if ok else None
+
+
+def test_forecast(r):
+    """The velocity path can request a forecast hour (fxx). A forecast must be
+    valid AND differ from the analysis: byte-identical bodies would mean fxx=6
+    served the cached F00 file, i.e. a cache-key collision (the -f{fxx} key in
+    the regrid/subset filenames is what prevents that)."""
+    T = recent_time()
+    r.section("HRRR forecast hours (fxx) on the velocity path")
+
+    f00 = _fetch_gribjson(r, "hrrr/winds/gribjson [analysis F00]",
+                          f"/hrrr/winds/gribjson/{T}")
+    f06 = _fetch_gribjson(r, "hrrr/winds/gribjson [forecast fxx=6]",
+                          f"/hrrr/winds/gribjson/{T}?fxx=6")
+    if f00 is not None and f06 is not None:
+        r.check("forecast fxx=6 differs from analysis (no cache collision)",
+                f00 != f06, "fxx=6 body is byte-identical to F00")
+
+    # Same check on the projwin subset path, which builds its own cache file.
+    p00 = _fetch_gribjson(r, "hrrr/winds/gribjson +projwin [analysis F00]",
+                          f"/hrrr/winds/gribjson/{T}/{PROJWIN}")
+    p06 = _fetch_gribjson(r, "hrrr/winds/gribjson +projwin [forecast fxx=6]",
+                          f"/hrrr/winds/gribjson/{T}/{PROJWIN}?fxx=6")
+    if p00 is not None and p06 is not None:
+        r.check("forecast fxx=6 +projwin differs from analysis (no cache collision)",
+                p00 != p06, "fxx=6 projwin body is byte-identical to F00")
+
+
 def run(r):
     T = recent_time()
     TZ = T + "Z"
@@ -55,6 +96,8 @@ def run(r):
     _run_case(r, "hrrr/gribjson [default=winds]", f"/hrrr/gribjson/{T}", "gribjson", "winds")
     _run_case(r, "hrrr/winds/gribjson +projwin",
               f"/hrrr/winds/gribjson/{T}/{PROJWIN}", "gribjson", "winds")
+
+    test_forecast(r)
 
     r.section("HRRR raster products x {geotiff, png}")
     for prod in HRRR_PRODUCTS:

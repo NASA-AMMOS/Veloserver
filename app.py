@@ -45,7 +45,7 @@ class App():
         if not os.path.exists(config.APP_CONFIG["CACHE_DIR"]):
             os.makedirs(config.APP_CONFIG["CACHE_DIR"])
 
-    def get_data(self, model, format, iso_string, projwin=None, product='winds'):
+    def get_data(self, model, format, iso_string, projwin=None, product='winds', fxx_raw=None):
         # Validate all user-supplied tokens before they reach any path/subprocess.
         projwin, error = validate_request(model, format, projwin, product)
         if error is not None:
@@ -57,11 +57,19 @@ class App():
         except ValueError:
             return json_error(400, f'Invalid datetime {iso_string!r}; expected ISO 8601 (e.g. 2024-03-05T19:00:00)')
 
+        # forecast hour only applies to HRRR; ecmwf/gfs handle their own steps
+        fxx = 0
+        if model == 'hrrr':
+            try:
+                fxx = parse_fxx(fxx_raw, time)
+            except ValueError as e:
+                return json_error(400, str(e))
+
         # if fetching or processing the data fails, return a 502 instead of
         # letting the error become a 500 page
         try:
             if model == 'hrrr':
-                result = self._serve_hrrr(product, projwin, date, time, format)
+                result = self._serve_hrrr(product, projwin, date, time, format, fxx)
             elif model == 'ecmwf':
                 result = self._serve_json(process_ecmwf(
                     projwin, date, config.APP_CONFIG["CACHE_DIR"]))
@@ -107,13 +115,14 @@ class App():
             print(f'[COG] error serving {product}: {e}')
             return text_error(500, 'Error serving COG')
 
-    def _serve_hrrr(self, product, projwin, date, time, format):
+    def _serve_hrrr(self, product, projwin, date, time, format, fxx=0):
         output = process_hrrr(product,
                               projwin,
                               date,
                               time,
                               config.APP_CONFIG["CACHE_DIR"],
-                              format)
+                              format,
+                              fxx)
         # process_hrrr returns an output file path on success, or a plain
         # error message (e.g. unsupported product/format) on failure.
         if not os.path.isfile(output):

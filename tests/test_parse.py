@@ -192,6 +192,8 @@ def test_parse_fxx(r):
             _raises_valueerror(lambda: parse.parse_fxx("-1", "00:00:00")), "want ValueError")
     r.check("non-integer rejected",
             _raises_valueerror(lambda: parse.parse_fxx("abc", "00:00:00")), "want ValueError")
+    r.check("accepts the data route's HH:MM:SS hour form (uses init hour only)",
+            parse.parse_fxx("6", "19:30:00") == 6, f"got {parse.parse_fxx('6', '19:30:00')}")
 
 
 def test_hrrr_format_error(r):
