@@ -41,6 +41,26 @@
             display: inline-block;
             font-size: 16px;
         }
+
+        table {
+            margin: 0 auto 20px auto;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f7f7f7;
+        }
+
+        code {
+            background-color: #f4f4f4;
+            padding: 1px 4px;
+        }
     </style>
 </head>
 <body>
@@ -54,17 +74,48 @@
         </section>
         <section id="usage">
             <h2>Usage</h2>
-			<p>Default server port is 8104. REST requests are structured in the form:</p>
-			<p><code>/&lt;model&gt;/&lt;format&gt;/&lt;datetime&gt;/&lt;projwin&gt;</code></p>
-			<p><strong>model</strong> - Available options: <code>gribjson</code>, <code>geojson</code>, <code>geotiff</code>, <code>png</code></p>
-			<p><strong>format</strong> - Available options: <code>ecmwf</code>, <code>gfs</code>, <code>hrrr</code></p>
-			<p><strong>datetime</strong> - In ISO8601 format: <code>YYYY-MM-DDThh:mm:ssZ</code></p>
-			<p><strong>projwin</strong> - Bounding box window in format: <code>ulx,uly,lrx,lry</code></p>
+			<p>Default server port is 8104. Data is fetched on demand from the upstream model, converted to the requested format, cached, and returned. A trailing <code>/</code> is optional on every route.</p>
+			<p>Most requests are structured in the form:</p>
+			<p><code>/&lt;model&gt;/&lt;product&gt;/&lt;format&gt;/&lt;datetime&gt;/&lt;projwin&gt;</code></p>
+			<p><code>product</code> and <code>projwin</code> are optional, which gives the following routes:</p>
+			<table>
+				<tr><th>Route</th><th>Returns</th></tr>
+				<tr><td><code>/&lt;model&gt;/&lt;format&gt;/&lt;datetime&gt;</code></td><td>Global data for the default product (winds)</td></tr>
+				<tr><td><code>/&lt;model&gt;/&lt;format&gt;/&lt;datetime&gt;/&lt;projwin&gt;</code></td><td>Data subset to a bounding box</td></tr>
+				<tr><td><code>/&lt;model&gt;/&lt;product&gt;/&lt;format&gt;/&lt;datetime&gt;</code></td><td>Global data for a specific product</td></tr>
+				<tr><td><code>/&lt;model&gt;/&lt;product&gt;/&lt;format&gt;/&lt;datetime&gt;/&lt;projwin&gt;</code></td><td>A specific product, subset to a bounding box</td></tr>
+			</table>
+			<p>There is also one dedicated route for Cloud-Optimized GeoTIFFs, which is HRRR only and takes no model or format: <code>/cog/&lt;product&gt;/&lt;datetime&gt;</code> returns an EPSG:3857 Cloud-Optimized GeoTIFF.</p>
+
+			<h3>Parameters</h3>
+			<p><strong>model</strong> - <code>hrrr</code> (CONUS), <code>gfs</code> (global), or <code>ecmwf</code> (global; requires a licence and <code>~/.ecmwfapirc</code>).</p>
+			<p><strong>product</strong> - HRRR only; defaults to <code>winds</code>. Options: <code>winds</code> (10 m U/V vectors, the velocity layer), <code>temp_2m</code>, <code>dewpoint_2m</code>, <code>rh_2m</code>, <code>wind_gust</code>, <code>pbl_height</code>, <code>precip_rate</code>, <code>smoke_massden</code>.</p>
+			<p><strong>format</strong> - <code>gribjson</code> (U/V vectors for animated streamlines, winds only), <code>geotiff</code>, or <code>png</code>. Only winds supports gribjson; for any other product use geotiff, png, or the /cog route (gribjson otherwise returns 400). gfs and ecmwf return gribjson only.</p>
+			<p><strong>datetime</strong> - ISO 8601, e.g. <code>2025-01-01T06:00:00Z</code>. A bare date means midnight. Each model rounds to its own run cadence: HRRR hourly, GFS every 6 hours, ECMWF 00z.</p>
+			<p><strong>projwin</strong> - Bounding box <code>ulx,uly,lrx,lry</code> (west, north, east, south). Leave it out of the route for the full grid.</p>
+			<p><strong>fxx</strong> is an optional query parameter for HRRR requests. It sets the forecast hour, which is how far ahead of the model run you want to look, so adding <code>?fxx=6</code> gives you the six-hour forecast. If you leave it off you get F00, which is called the analysis hour. The analysis hour is the model's best picture of the atmosphere at the moment the run started, rather than a forecast of some later time. Every run reaches F18, and the runs at 00, 06, 12, and 18z reach all the way out to F48.</p>
         </section>
         <section id="samples">
             <h2>Sample Requests</h2>
-			<p>HRRR global wind data for 2025-01-01 at midnight: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01/" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01/</a></p>
-			<p>ECMWF localized wind data for 2025-01-01 at 06:00:00 UTC: <a href="http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33/" rel="nofollow">http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33/</a></p>
+			<h3>Winds (velocity / streamline layer)</h3>
+			<p>Global HRRR winds: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01T00:00:00Z" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01T00:00:00Z</a></p>
+			<p>HRRR winds over Southern California: <a href="http://localhost:8104/hrrr/winds/gribjson/2025-01-01T00:00:00Z/-118,34,-117,33" rel="nofollow">http://localhost:8104/hrrr/winds/gribjson/2025-01-01T00:00:00Z/-118,34,-117,33</a></p>
+			<p>Global GFS winds: <a href="http://localhost:8104/gfs/gribjson/2025-01-01T00:00:00Z" rel="nofollow">http://localhost:8104/gfs/gribjson/2025-01-01T00:00:00Z</a></p>
+			<p>ECMWF winds over a box (06:00 UTC): <a href="http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33" rel="nofollow">http://localhost:8104/ecmwf/gribjson/2025-01-01T06:00:00Z/-118,34,-117,33</a></p>
+
+			<h3>HRRR forecast hours (fxx)</h3>
+			<p>Analysis (F00), the default: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01T12:00:00Z" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01T12:00:00Z</a></p>
+			<p>6 hours ahead of the 09z run: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01T09:00:00Z?fxx=6" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01T09:00:00Z?fxx=6</a></p>
+			<p>48 hours ahead of the 00z extended run: <a href="http://localhost:8104/hrrr/gribjson/2025-01-01T00:00:00Z?fxx=48" rel="nofollow">http://localhost:8104/hrrr/gribjson/2025-01-01T00:00:00Z?fxx=48</a></p>
+
+			<h3>HRRR rasters (png, geotiff)</h3>
+			<p>2 m temperature PNG: <a href="http://localhost:8104/hrrr/temp_2m/png/2025-01-01T00:00:00Z" rel="nofollow">http://localhost:8104/hrrr/temp_2m/png/2025-01-01T00:00:00Z</a></p>
+			<p>PBL height GeoTIFF: <a href="http://localhost:8104/hrrr/pbl_height/geotiff/2025-01-01T00:00:00Z" rel="nofollow">http://localhost:8104/hrrr/pbl_height/geotiff/2025-01-01T00:00:00Z</a></p>
+			<p>Smoke during the Jan 2025 LA fires: <a href="http://localhost:8104/hrrr/smoke_massden/png/2025-01-08T21:00:00Z" rel="nofollow">http://localhost:8104/hrrr/smoke_massden/png/2025-01-08T21:00:00Z</a></p>
+
+			<h3>Cloud-Optimized GeoTIFFs (/cog)</h3>
+			<p>Winds COG: <a href="http://localhost:8104/cog/winds/2025-01-01T00:00:00Z" rel="nofollow">http://localhost:8104/cog/winds/2025-01-01T00:00:00Z</a></p>
+			<p>Temperature COG, 12-hour forecast: <a href="http://localhost:8104/cog/temp_2m/2025-01-01T00:00:00Z?fxx=12" rel="nofollow">http://localhost:8104/cog/temp_2m/2025-01-01T00:00:00Z?fxx=12</a></p>
         </section>
     </main>
 </body>

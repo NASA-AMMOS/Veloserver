@@ -95,7 +95,7 @@ A bounding box, written `ulx,uly,lrx,lry` (upper-left lon/lat, lower-right lon/l
 
 **fxx**
 
-Applies to HRRR. The forecast hour: how many hours ahead of the run's start time the data is valid for. F00 is the analysis, the model's best estimate of conditions at the run time itself; F06, F12, and so on are the model's forecast that many hours into the future. If you leave `fxx` out, you get F00.
+Applies to HRRR. The forecast hour: how many hours ahead of the run's start time the data is valid for. F00 is the analysis hour, the model's best estimate of conditions at the run time itself; F06, F12, and so on are the model's forecast that many hours into the future. If you leave `fxx` out, you get F00.
 
 Every HRRR run forecasts out to F18. The four runs each day at 00z, 06z, 12z, and 18z are extended runs that go all the way to F48; every other run stops at F18. So F00 to F18 works for any `datetime`, but F19 to F48 works only when the `datetime` hour is 00, 06, 12, or 18.
 
@@ -114,7 +114,7 @@ Every HRRR run forecasts out to F18. The four runs each day at 00z, 06z, 12z, an
 
 Default (no `fxx`):
 
-- Analysis (F00), returned when `fxx` is left off: http://localhost:8104/hrrr/gribjson/2025-01-01T12:00:00Z
+- Analysis hour (F00), returned when `fxx` is left off: http://localhost:8104/hrrr/gribjson/2025-01-01T12:00:00Z
 
 Standard runs (any hour other than 00/06/12/18z, valid F00 to F18):
 
