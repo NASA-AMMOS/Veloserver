@@ -7,7 +7,7 @@ APP_CONFIG = {
     'CACHE_FILES': True,
     'CACHE_MAX_BYTES': int(os.environ.get('CACHE_MAX_BYTES', 300 * 1024 ** 3)),  # 300 GB
     'CACHE_TTL_HOURS': int(os.environ.get('CACHE_TTL_HOURS', 0)),
-    'CACHE_TARGET_RATIO': float(os.environ.get('CACHE_TARGET_RATIO', 0.85)),
+    'CACHE_TARGET_RATIO': float(os.environ.get('CACHE_TARGET_RATIO', 0.50)),
     'AVAILABLE_FORMATS': {
         "json": "application/json",
         "png": "image/png",
