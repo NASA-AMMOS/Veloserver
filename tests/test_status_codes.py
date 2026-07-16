@@ -41,9 +41,14 @@ def run(r):
     _expect_status(r, "projwin non-numeric -> 400", f"/gfs/gribjson/{T}/a,b,c,d", 400)
     _expect_status(r, "projwin dotdot -> 400", f"/gfs/gribjson/{T}/..,..,..,..", 400)
     _expect_status(r, "unknown format -> 400", f"/gfs/xml/{T}", 400)
+    # fxx on the data/velocity path: out-of-range and non-integer are clean 400s
+    _expect_status(r, "fxx out of range -> 400", f"/hrrr/winds/gribjson/{T}?fxx=99", 400)
+    _expect_status(r, "fxx non-integer -> 400", f"/hrrr/winds/gribjson/{T}?fxx=abc", 400)
 
     r.section("Valid requests should return 200")
     _expect_status(r, "winds gribjson -> 200", f"/hrrr/winds/gribjson/{T}", 200)
+    _expect_status(r, "winds gribjson forecast (fxx=6) -> 200",
+                   f"/hrrr/winds/gribjson/{T}?fxx=6", 200)
     _expect_status(r, "scalar geotiff -> 200", f"/hrrr/temp_2m/geotiff/{T}", 200)
     _expect_status(r, "gfs gribjson +projwin -> 200",
                    f"/gfs/gribjson/{T}/{PROJWIN}", 200)
