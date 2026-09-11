@@ -95,7 +95,10 @@ jobs:
           echo IMAGE_ID=$IMAGE_ID
           echo VERSION=$VERSION
           echo REGISTRY_TAGS=$REGISTRY_TAGS
-          echo headref=${{ github.head_ref }}
+          name: "Print headref"
+          env:
+            HEAD_REF: ${{ github.head_ref }}
+          run: echo "HEAD_REF=$HEAD_REF"
 
           SHA_SHORT=${{ github.sha }}
           [ "${{ github.event_name }}" == "pull_request" ] && SHA_SHORT=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-8)
