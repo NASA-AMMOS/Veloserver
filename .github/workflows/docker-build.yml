@@ -112,10 +112,13 @@ jobs:
           echo "SHA_SHORT=$SHA_SHORT" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f 
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # For our future reference this was pointing at V3.
 
       - name: Login to GHCR
-        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login -u ${{ github.actor }} --password-stdin ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo $GITHUB_TOKEN | docker login -u $ACTOR --password-stdin ghcr.io
 
       - name: Docker build and push
         env:
