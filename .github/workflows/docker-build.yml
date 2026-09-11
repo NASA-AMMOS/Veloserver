@@ -98,10 +98,13 @@ jobs:
           name: "Print headref"
           env:
             HEAD_REF: ${{ github.head_ref }}
+            SHA: ${{ github.sha }}
+            EVENT_NAME: ${{ github.event_name }}
+            PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           run: echo "HEAD_REF=$HEAD_REF"
 
-          SHA_SHORT=${{ github.sha }}
-          [ "${{ github.event_name }}" == "pull_request" ] && SHA_SHORT=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-8)
+          SHA_SHORT=$SHA
+          [ "$EVENT_NAME" == "pull_request" ] && SHA_SHORT=$(echo $PR_HEAD_SHA | cut -c1-8)
 
           echo "Final image tag to be pushed:"
           echo $REGISTRY_TAGS
