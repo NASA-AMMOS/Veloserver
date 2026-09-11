@@ -48,6 +48,12 @@ jobs:
 
       - name: Generate tags
         id: generate
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REF: ${{ github.ref }}
         run: |
 
           # Image ID
@@ -63,18 +69,18 @@ jobs:
           MAJOR_VERSION=${MINOR_VERSION%.*}
 
           # Change all uppercase to lowercase, just in case
-          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          IMAGE_ID=$(echo "$IMAGE_ID" | tr '[A-Z]' '[a-z]')
 
           # Strip git ref prefix from version and use it as suffix for version
-          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          VERSION=$(echo "${REF}" | sed -e 's,.*/\(.*\),\1,')
 
           # For pull requests just extract the PR number
           PR_NUMBER=""
-          [ "${{ github.event_name }}" == "pull_request" ] && VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\)/merge,\1,')
-          [ "${{ github.event_name }}" == "pull_request" ] && PR_NUMBER=$VERSION
+          [ "${EVENT_NAME}" == "pull_request" ] && VERSION=$(echo "${REF}" | sed -e 's,.*/\(.*\)/merge,\1,')
+          [ "${EVENT_NAME}" == "pull_request" ] && PR_NUMBER=$VERSION
 
           # Append version
-          [ "${{ github.event_name }}" == "pull_request" ] && VERSION=$PATCH_VERSION-$BDATE-$VERSION
+          [ "${EVENT_NAME}" == "pull_request" ] && VERSION=$PATCH_VERSION-$BDATE-$VERSION
 
           # Strip "v" prefix from tag name if it's a tag
           # [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
@@ -82,7 +88,7 @@ jobs:
           # Use Docker `latest` tag convention if it's a main branch build
           [ "$VERSION" == "main" ] && VERSION=latest
           [ "$VERSION" == "development" ] && VERSION=development
-          [ "${{ github.event_name }}" == "release" ] && VERSION=release
+          [ "${EVENT_NAME}" == "release" ] && VERSION=release
 
           # Compose REGISTRY_TAGS variable
           REGISTRY_TAGS="-t $IMAGE_ID:$VERSION"
@@ -92,27 +98,27 @@ jobs:
           [ "$VERSION" == "development" ] && REGISTRY_TAGS="$REGISTRY_TAGS -t $IMAGE_ID:$MAJOR_VERSION-development -t $IMAGE_ID:$PATCH_VERSION-$BDATE-$(git rev-parse --short HEAD)"
           [ "$VERSION" == "release" ] && REGISTRY_TAGS="$REGISTRY_TAGS -t $IMAGE_ID:$PATCH_VERSION-release -t $IMAGE_ID:$MINOR_VERSION-release -t $IMAGE_ID:$MAJOR_VERSION-release -t $IMAGE_ID:$PATCH_VERSION-$BDATE-$(git rev-parse --short HEAD)"
 
-          echo IMAGE_ID=$IMAGE_ID
-          echo VERSION=$VERSION
-          echo REGISTRY_TAGS=$REGISTRY_TAGS
-          echo headref=${{ github.head_ref }}
+          [ "${EVENT_NAME}" == "pull_request" ] && SHA_SHORT="${PR_HEAD_SHA}"
 
-          SHA_SHORT=${{ github.sha }}
-          [ "${{ github.event_name }}" == "pull_request" ] && SHA_SHORT=$(echo ${{ github.event.pull_request.head.sha }} | cut -c1-8)
+          echo "IMAGE_ID=$IMAGE_ID"
+          echo "VERSION=$VERSION"
+          echo "REGISTRY_TAGS=$REGISTRY_TAGS"
 
           echo "Final image tag to be pushed:"
-          echo $REGISTRY_TAGS
-          echo "REGISTRY_TAGS=$REGISTRY_TAGS" >> $GITHUB_OUTPUT
-          echo "IMAGE_ID=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "REGISTRY_TAGS_VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "REGISTRY_TAGS_PR_NUMBER=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "SHA_SHORT=$SHA_SHORT" >> $GITHUB_OUTPUT
-
+          echo "${REGISTRY_TAGS}"
+          echo "REGISTRY_TAGS=${REGISTRY_TAGS}" >> "${GITHUB_OUTPUT}"
+          echo "IMAGE_ID=${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
+          echo "REGISTRY_TAGS_VERSION=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "REGISTRY_TAGS_PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+          echo "SHA_SHORT=${SHA_SHORT}" >> "${GITHUB_OUTPUT}"
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # For our future reference this was pointing at V3.
 
       - name: Login to GHCR
-        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login -u ${{ github.actor }} --password-stdin ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo $GITHUB_TOKEN | docker login -u $ACTOR --password-stdin ghcr.io
 
       - name: Docker build and push
         env:
