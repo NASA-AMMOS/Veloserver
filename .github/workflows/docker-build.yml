@@ -95,25 +95,28 @@ jobs:
           echo IMAGE_ID=$IMAGE_ID
           echo VERSION=$VERSION
           echo REGISTRY_TAGS=$REGISTRY_TAGS
-          name: "Print headref"
+          - name: "Set variables"
           env:
             HEAD_REF: ${{ github.head_ref }}
             SHA: ${{ github.sha }}
             EVENT_NAME: ${{ github.event_name }}
             PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          run: echo "HEAD_REF=$HEAD_REF"
+          run: |
+            echo "HEAD_REF=${HEAD_REF}"
+            echo "SHA=${SHA}"
+            echo "EVENT_NAME=${EVENT_NAME}"
+            echo "PR_HEAD_SHA=${PR_HEAD_SHA}"
 
-          SHA_SHORT=$SHA
-          [ "$EVENT_NAME" == "pull_request" ] && SHA_SHORT=$(echo $PR_HEAD_SHA | cut -c1-8)
+            SHA_SHORT="${SHA}"
+            [ "${EVENT_NAME}" == "pull_request" ] && SHA_SHORT="${PR_HEAD_SHA}"
 
-          echo "Final image tag to be pushed:"
-          echo $REGISTRY_TAGS
-          echo "REGISTRY_TAGS=$REGISTRY_TAGS" >> $GITHUB_OUTPUT
-          echo "IMAGE_ID=$IMAGE_ID" >> $GITHUB_OUTPUT
-          echo "REGISTRY_TAGS_VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "REGISTRY_TAGS_PR_NUMBER=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "SHA_SHORT=$SHA_SHORT" >> $GITHUB_OUTPUT
-
+            echo "Final image tag to be pushed:"
+            echo "${REGISTRY_TAGS}"
+            echo "REGISTRY_TAGS=${REGISTRY_TAGS}" >> "${GITHUB_OUTPUT}"
+            echo "IMAGE_ID=${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
+            echo "REGISTRY_TAGS_VERSION=${VERSION}" >> "${GITHUB_OUTPUT}"
+            echo "REGISTRY_TAGS_PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+            echo "SHA_SHORT=${SHA_SHORT}" >> "${GITHUB_OUTPUT}"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # For our future reference this was pointing at V3.
 
