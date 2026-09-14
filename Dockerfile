@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y \
     gfortran \
     gdal-bin \
     --no-install-recommends && rm -r /var/lib/apt/lists/* \
-    && wget https://ftp.cpc.ncep.noaa.gov/wd51we/wgrib2/wgrib2.tgz \
+    && wget --max-redirect=0 https://ftp.cpc.ncep.noaa.gov/wd51we/wgrib2/wgrib2.tgz \
     && mkdir -p /usr/local/grib2/ \
     && tar -xf /tmp/wgrib2.tgz -C /tmp/ \
     && rm -r /tmp/wgrib2.tgz \
