@@ -48,7 +48,6 @@ def enable_cors_after_request_hook():
 
 @bottle_app.route('/')
 def server_static(filename='index.html'):
-    # root = os.path.dirname(__file__)
     return static_file(filename, root='.')
 
 
