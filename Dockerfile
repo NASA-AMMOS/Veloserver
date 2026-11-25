@@ -49,8 +49,8 @@ COPY . /home/veloserver/
 WORKDIR /home/veloserver
 # Create cache and install Python dependencies
 RUN mkdir -p /home/veloserver/cache && \
-    pip3 install --upgrade pip && \
-    pip3 install -r requirements.txt
+    pip3 install --only-binary :all: pip==26.3 && \
+    pip3 install --only-binary :all: -r requirements.txt
 
 # Run bottle server
 EXPOSE 8104
